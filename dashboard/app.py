@@ -33,8 +33,8 @@ from plots import X_INDICE, X_TIEMPO, export_zip, figure_hrbrwf
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "datos"
 
-PROTO_SECUENCIA = "Secuencia con retención (MEDICION20SEQRES)"
-PROTO_CONTINUO = "Captura continua (tomadatosSEPT)"
+PROTO_SECUENCIA = "Secuencia con retención "
+PROTO_CONTINUO = "Captura continua "
 
 FUENTE_SERIAL = "Puerto serial (ESP32)"
 FUENTE_SIMULADOR = "Simulador (sin hardware)"
