@@ -28,7 +28,15 @@ from data_io import (
     phase_summary,
     records_to_long,
 )
-from plots import X_INDICE, X_TIEMPO, export_zip, figure_hrbrwf
+from plots import (
+    X_INDICE,
+    X_TIEMPO,
+    SavgolConfig,
+    export_zip,
+    extract_series,
+    figure_hrbrwf,
+    savgol_window,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "datos"
@@ -79,6 +87,29 @@ def fmt_value(value, unit: str = "", decimals: int = 0) -> str:
 # VISUALIZACIÓN DE RESULTADOS (compartida)
 # ============================================================
 
+def savgol_controls(key: str) -> SavgolConfig | None:
+    s1, s2, s3 = st.columns([1, 2, 1])
+    activo = s1.checkbox("Filtro Savitzky-Golay en BW", value=False, key=f"{key}_sg")
+    ventana = s2.slider(
+        "Ventana (s)", 0.1, 3.0, 0.8, 0.1, key=f"{key}_sg_ventana", disabled=not activo,
+        help="Debe ser bastante menor que un ciclo respiratorio (~2-6 s).",
+    )
+    orden = s3.selectbox("Orden del polinomio", [2, 3, 4, 5], key=f"{key}_sg_orden", disabled=not activo)
+    return SavgolConfig(ventana_s=ventana, orden=orden) if activo else None
+
+
+def savgol_caption(datos, savgol: SavgolConfig) -> None:
+    wave_t = extract_series(datos).wave_t
+    if len(wave_t) < 2:
+        return
+    dt, window = savgol_window(wave_t, savgol)
+    st.caption(
+        f"Muestreo BW estimado: {1 / dt:.1f} Hz → ventana de {window} muestras "
+        f"({window * dt:.2f} s), polinomio de orden {savgol.orden}. "
+        "Se filtra cada tramo continuo por separado; los datos guardados no se modifican."
+    )
+
+
 def render_analysis(long, fmt: str, key: str) -> None:
     if long.empty:
         st.info("No hay datos para graficar.")
@@ -96,6 +127,8 @@ def render_analysis(long, fmt: str, key: str) -> None:
         disabled=x_mode != X_TIEMPO or fmt != FORMATO_SECUENCIA,
     )
 
+    savgol = savgol_controls(key)
+
     if seleccion == "Todas":
         datos = long
         titulo = "Todas las mediciones — MR60BHA1" if fmt == FORMATO_SECUENCIA else "Captura continua — MR60BHA1"
@@ -103,7 +136,10 @@ def render_analysis(long, fmt: str, key: str) -> None:
         datos = long[long["medicion"] == seleccion]
         titulo = f"Medición {seleccion} — MR60BHA1"
 
-    fig = figure_hrbrwf(datos, titulo, x_mode=x_mode, show_phases=show_phases)
+    if savgol is not None:
+        savgol_caption(datos, savgol)
+
+    fig = figure_hrbrwf(datos, titulo, x_mode=x_mode, show_phases=show_phases, savgol=savgol)
     st.plotly_chart(fig, width="stretch", theme=None, key=f"{key}_chart")
 
     if fmt == FORMATO_SECUENCIA:
@@ -113,13 +149,16 @@ def render_analysis(long, fmt: str, key: str) -> None:
             st.dataframe(summary, width="stretch")
 
     st.subheader("Exportar imágenes")
-    st.caption("Genera una imagen PNG por medición con el mismo estilo de HRBRWF.py (medicion_XX.png).")
+    st.caption(
+        "Genera una imagen PNG por medición con el mismo estilo de HRBRWF.py (medicion_XX.png). "
+        "Si el filtro Savitzky-Golay está activo, la onda filtrada se superpone también en las imágenes."
+    )
     e1, e2 = st.columns([1, 3])
     dpi = e1.number_input("DPI", min_value=72, max_value=600, value=300, step=50, key=f"{key}_dpi")
     zip_key = f"{key}_zip"
     if e2.button("Generar imágenes", key=f"{key}_gen"):
         with st.spinner("Generando imágenes..."):
-            st.session_state[zip_key] = export_zip(long, int(dpi))
+            st.session_state[zip_key] = export_zip(long, int(dpi), savgol)
     if zip_key in st.session_state:
         st.download_button(
             "Descargar ZIP", st.session_state[zip_key],
@@ -235,7 +274,7 @@ def render_banner(status) -> None:
 
 
 @st.fragment(run_every=1.0)
-def live_panel() -> None:
+def live_panel(savgol: SavgolConfig | None) -> None:
     session = get_manager().session
     if session is None:
         return
@@ -279,6 +318,7 @@ def live_panel() -> None:
         long, titulo,
         x_mode=st.session_state.get("live_x", X_TIEMPO),
         show_phases=st.session_state.get("live_fases", True),
+        savgol=savgol,
     )
     st.plotly_chart(fig, width="stretch", theme=None, key="live_chart")
 
@@ -297,7 +337,7 @@ def render_live(manager: AcquisitionManager) -> None:
     o2.radio("Ventana", [VENTANA_MEDICION, VENTANA_60S, VENTANA_TODO], horizontal=True, key="live_ventana")
     o3.checkbox("Sombrear fases", value=True, key="live_fases")
 
-    live_panel()
+    live_panel(savgol_controls("live"))
 
 
 def render_last_session(manager: AcquisitionManager) -> None:
