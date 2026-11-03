@@ -92,8 +92,8 @@ def phase_intervals(df: pd.DataFrame) -> list[tuple[str, float, float]]:
 
 
 def phase_summary(df: pd.DataFrame) -> pd.DataFrame:
-    """Media, desviación y n de HR y BR por medición y fase."""
-    data = df[df["tipo"].isin(["HR", "BR"])].dropna(subset=["valor_1"])
+    """Media, desviación y n de HR, BR y distancia por medición y fase."""
+    data = df[df["tipo"].isin(["HR", "BR", "DIST"])].dropna(subset=["valor_1"])
     if data.empty:
         return pd.DataFrame()
     summary = (
@@ -102,5 +102,5 @@ def phase_summary(df: pd.DataFrame) -> pd.DataFrame:
         .unstack("tipo")
     )
     summary.columns = [f"{tipo} {stat}" for stat, tipo in summary.columns]
-    order = [c for t in ("HR", "BR") for c in (f"{t} media", f"{t} desv", f"{t} n") if c in summary.columns]
+    order = [c for t in ("HR", "BR", "DIST") for c in (f"{t} media", f"{t} desv", f"{t} n") if c in summary.columns]
     return summary[order].round(2)

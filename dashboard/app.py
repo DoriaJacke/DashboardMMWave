@@ -1,4 +1,4 @@
-﻿# ============================================================
+# ============================================================
 # DASHBOARD MR60BHA1 (radar mmWave 60 GHz)
 #
 # Ejecutar desde la raíz del repositorio:
@@ -31,9 +31,12 @@ from data_io import (
 from plots import (
     X_INDICE,
     X_TIEMPO,
+    DistanceZone,
     SavgolConfig,
     export_zip,
     extract_series,
+    figure_distance_gauge,
+    figure_distance_trend,
     figure_hrbrwf,
     savgol_window,
 )
@@ -50,6 +53,8 @@ FUENTE_SIMULADOR = "Simulador (sin hardware)"
 VENTANA_MEDICION = "Medición actual"
 VENTANA_60S = "Últimos 60 s"
 VENTANA_TODO = "Todo"
+
+DIST_STALE_S = 5.0
 
 PHASE_COLORS = {
     "ESPERA": "#7f8c8d",
@@ -145,7 +150,7 @@ def render_analysis(long, fmt: str, key: str) -> None:
     if fmt == FORMATO_SECUENCIA:
         summary = phase_summary(long)
         if not summary.empty:
-            st.subheader("Resumen HR / BR por medición y fase")
+            st.subheader("Resumen HR / BR / distancia por medición y fase")
             st.dataframe(summary, width="stretch")
 
     st.subheader("Exportar imágenes")
@@ -273,8 +278,19 @@ def render_banner(status) -> None:
     )
 
 
+def distance_controls() -> DistanceZone:
+    with st.expander("Medidor de distancia: zona adecuada"):
+        d1, d2, d3, d4 = st.columns(4)
+        unidad = d4.text_input("Unidad", "cm", key="dist_unidad",
+                               help="Según el protocolo de Seeed el MR60BHA1 entrega cm (por confirmar).")
+        minimo = d1.number_input(f"Mínimo ({unidad})", 0.0, 1000.0, 40.0, 5.0, key="dist_min")
+        maximo = d2.number_input(f"Máximo ({unidad})", 0.0, 1000.0, 150.0, 5.0, key="dist_max")
+        escala = d3.number_input(f"Escala del medidor ({unidad})", 10.0, 2000.0, 300.0, 10.0, key="dist_escala")
+    return DistanceZone(minimo=minimo, maximo=max(maximo, minimo), escala=max(escala, maximo), unidad=unidad)
+
+
 @st.fragment(run_every=1.0)
-def live_panel(savgol: SavgolConfig | None) -> None:
+def live_panel(savgol: SavgolConfig | None, zone: DistanceZone) -> None:
     session = get_manager().session
     if session is None:
         return
@@ -298,12 +314,21 @@ def live_panel(savgol: SavgolConfig | None) -> None:
         st.progress(min(max(avance, 0.0), 1.0))
 
     records, latest = session.snapshot()
-    m1, m2, m3, m4, m5 = st.columns(5)
+    m1, m2, m3, m4 = st.columns(4)
     m1.metric("HR", fmt_value(latest["HR"], " BPM"))
     m2.metric("BR", fmt_value(latest["BR"], " resp/min"))
-    m3.metric("Distancia", fmt_value(latest["DIST"], "", 1))
-    m4.metric("Evento", fmt_value(latest["EVENT"]))
-    m5.metric("Líneas recibidas / guardadas", f"{session.n_lines} / {session.n_saved}")
+    m3.metric("Evento", fmt_value(latest["EVENT"]))
+    m4.metric("Líneas recibidas / guardadas", f"{session.n_lines} / {session.n_saved}")
+
+    distancia, edad, historial = session.distance_snapshot()
+    stale = edad is not None and edad > DIST_STALE_S
+    g1, g2 = st.columns([2, 3])
+    g1.plotly_chart(figure_distance_gauge(distancia, zone, stale), width="stretch",
+                    theme=None, key="live_dist_gauge")
+    g2.plotly_chart(figure_distance_trend(historial, zone), width="stretch",
+                    theme=None, key="live_dist_trend")
+    if distancia is None:
+        st.caption("El radar aún no ha enviado datos de distancia (líneas `DIST,<valor>`).")
 
     long = records_to_long(records)
     ventana = st.session_state.get("live_ventana", VENTANA_MEDICION)
@@ -337,7 +362,8 @@ def render_live(manager: AcquisitionManager) -> None:
     o2.radio("Ventana", [VENTANA_MEDICION, VENTANA_60S, VENTANA_TODO], horizontal=True, key="live_ventana")
     o3.checkbox("Sombrear fases", value=True, key="live_fases")
 
-    live_panel(savgol_controls("live"))
+    zone = distance_controls()
+    live_panel(savgol_controls("live"), zone)
 
 
 def render_last_session(manager: AcquisitionManager) -> None:

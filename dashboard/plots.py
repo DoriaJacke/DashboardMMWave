@@ -237,6 +237,85 @@ def figure_hrbrwf(
 
 
 # ============================================================
+# MEDIDOR DE DISTANCIA
+# ============================================================
+
+@dataclass
+class DistanceZone:
+    minimo: float = 40.0
+    maximo: float = 150.0
+    escala: float = 300.0
+    unidad: str = "cm"
+
+    def estado(self, value: float | None, stale: bool) -> tuple[str, str]:
+        """(texto, color) según la zona en que está la persona."""
+        if value is None:
+            return "Sin datos de distancia", "#95a5a6"
+        if stale:
+            return "Sin datos recientes", "#95a5a6"
+        if value < self.minimo:
+            return "Muy cerca del radar", "#e67e22"
+        if value > self.maximo:
+            return "Muy lejos del radar", "#c0392b"
+        return "Distancia adecuada", "#27ae60"
+
+
+def figure_distance_gauge(value: float | None, zone: DistanceZone, stale: bool = False) -> go.Figure:
+    texto, color = zone.estado(value, stale)
+    fig = go.Figure(
+        go.Indicator(
+            mode="gauge+number" if value is not None else "gauge",
+            value=value if value is not None else 0,
+            number=dict(suffix=f" {zone.unidad}", valueformat=".1f", font=dict(size=40, color=color)),
+            title=dict(text=texto, font=dict(size=18, color=color)),
+            gauge=dict(
+                axis=dict(range=[0, zone.escala], ticksuffix="", tickcolor="#444"),
+                bar=dict(color=color, thickness=0.3),
+                steps=[
+                    dict(range=[0, zone.minimo], color="rgba(230, 126, 34, 0.25)"),
+                    dict(range=[zone.minimo, zone.maximo], color="rgba(39, 174, 96, 0.25)"),
+                    dict(range=[zone.maximo, zone.escala], color="rgba(192, 57, 43, 0.25)"),
+                ],
+                threshold=dict(line=dict(color=color, width=4), thickness=0.85,
+                               value=value if value is not None else 0),
+            ),
+        )
+    )
+    fig.update_layout(
+        height=280, margin=dict(l=30, r=30, t=60, b=10),
+        paper_bgcolor="white", font=dict(color="#222"),
+    )
+    return fig
+
+
+def figure_distance_trend(history: list[tuple[float, float]], zone: DistanceZone, segundos: float = 60) -> go.Figure:
+    datos = [(t, d) for t, d in history if t >= -segundos]
+    fig = go.Figure()
+    fig.add_hrect(y0=zone.minimo, y1=zone.maximo, fillcolor="rgba(39, 174, 96, 0.15)",
+                  line_width=0, layer="below")
+    if datos:
+        t, d = zip(*datos)
+        fig.add_trace(go.Scatter(
+            x=t, y=d, mode="lines+markers",
+            line=dict(color=COLOR_LINEA, width=1.2),
+            marker=dict(color=COLOR_PUNTOS, size=6),
+            showlegend=False,
+        ))
+    axis_style = dict(showgrid=True, gridcolor="rgba(0,0,0,0.15)", griddash="dash",
+                      linecolor="#444", showline=True, color="#222")
+    fig.update_xaxes(title_text="Segundos atrás", range=[-segundos, 0], **axis_style)
+    fig.update_yaxes(title_text=f"Distancia ({zone.unidad})",
+                     range=None if datos else [0, zone.escala], **axis_style)
+    fig.update_layout(
+        title=dict(text=f"Distancia — últimos {segundos:.0f} s", x=0, font=dict(size=14, color="#111")),
+        height=280, margin=dict(l=60, r=20, t=40, b=40),
+        paper_bgcolor="white", plot_bgcolor="white", font=dict(color="#222"),
+        uirevision="constant",
+    )
+    return fig
+
+
+# ============================================================
 # EXPORTAR PNG (MATPLOTLIB, IGUAL A HRBRWF.py)
 # ============================================================
 

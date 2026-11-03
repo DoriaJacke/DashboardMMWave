@@ -15,6 +15,7 @@ import math
 import random
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -119,7 +120,7 @@ class SimulatedSource:
             self._br = max(self._br, 0.0)
             return f"BR,{self._br:.0f}"
         if kind == "DIST":
-            self._dist += random.gauss(0, 0.5)
+            self._dist += 0.1 * (55.0 - self._dist) + random.gauss(0, 1.0)
             return f"DIST,{self._dist:.1f}"
         return "EVENT," + random.choice(["QUIETO", "QUIETO", "QUIETO", "MOVIMIENTO"])
 
@@ -174,6 +175,8 @@ class AcquisitionSession:
         self.status = Status(total=protocol.n_mediciones)
         self.records: list[dict] = []
         self.latest: dict = {"HR": None, "BR": None, "DIST": None, "EVENT": None}
+        self.latest_t: dict = {}
+        self.dist_history: deque[tuple[float, float]] = deque(maxlen=5000)
         self.n_lines = 0
         self.n_saved = 0
 
@@ -261,7 +264,7 @@ class AcquisitionSession:
 
         with self.lock:
             self.n_lines += 1
-            self._update_latest(tipo, parts)
+            self._update_latest(tipo, parts, t)
 
             ctx = self.ctx
             if not ctx.recording:
@@ -275,7 +278,7 @@ class AcquisitionSession:
             if record is not None:
                 self.records.append(record)
 
-    def _update_latest(self, tipo: str, parts: list[str]) -> None:
+    def _update_latest(self, tipo: str, parts: list[str], t: float) -> None:
         if len(parts) < 2:
             return
         if tipo == "EVENT":
@@ -284,6 +287,9 @@ class AcquisitionSession:
             value = to_float(parts[1])
             if value is not None:
                 self.latest[tipo] = value
+                self.latest_t[tipo] = t
+                if tipo == "DIST":
+                    self.dist_history.append((t, value))
 
     def _write(self, row: list) -> None:
         self._writer.writerow(row)
@@ -351,6 +357,15 @@ class AcquisitionSession:
     def snapshot(self) -> tuple[list[dict], dict]:
         with self.lock:
             return list(self.records), dict(self.latest)
+
+    def distance_snapshot(self) -> tuple[Optional[float], Optional[float], list[tuple[float, float]]]:
+        """(última distancia, segundos desde que llegó, historial (t, distancia))."""
+        with self.lock:
+            history = list(self.dist_history)
+            t_last = self.latest_t.get("DIST")
+        now = time.monotonic() - self.t0
+        age = None if t_last is None else now - t_last
+        return self.latest["DIST"], age, [(t - now, d) for t, d in history]
 
 
 def parse_record(tipo: str, parts: list[str], t: float, medicion, fase) -> Optional[dict]:

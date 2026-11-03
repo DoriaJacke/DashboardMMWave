@@ -53,7 +53,7 @@ Todos los valores los calcula internamente el MR60BHA1; el ESP32 solo los reenv�
 |---|---|---|
 | `HR` | latidos por minuto (BPM) | Valor estimado por el sensor, aprox. uno por segundo |
 | `BR` | respiraciones por minuto | Valor estimado por el sensor, aprox. uno por segundo |
-| `DIST` | centímetros (según protocolo Seeed, **por confirmar**) | El dashboard lo muestra sin unidad |
+| `DIST` | centímetros (según protocolo Seeed, **por confirmar**) | El medidor de distancia asume cm; la unidad se puede cambiar en el dashboard |
 | `BW` | sin unidad física (amplitud relativa) | Sirve para forma, ritmo y amplitud relativa de la respiración; según el protocolo Seeed serían valores 0–255 centrados cerca de 128 (**por confirmar**) |
 | `EVENT` | texto | Estado categórico |
 | `timestamp` | hora del PC al recibir la línea | No es la hora de medición del sensor; puede haber un pequeño desfase por el puerto serial y el `delay(200)` del firmware |
@@ -122,7 +122,11 @@ Mientras se adquiere:
 - Banner con la fase actual (color por fase), número de medición y segundos restantes o cuenta regresiva.
 - Botón **"Estoy en posición — comenzar medición N"** cuando el protocolo espera confirmación.
 - Barra de avance de mediciones.
-- Últimos valores de HR, BR, distancia y evento, y número de líneas recibidas / guardadas.
+- Últimos valores de HR, BR y evento, y número de líneas recibidas / guardadas.
+- **Medidor de distancia:** indicador tipo velocímetro con la distancia actual de la persona al radar y tres zonas de color: *muy cerca* (naranjo), *distancia adecuada* (verde) y *muy lejos* (rojo). Al lado, un gráfico con la distancia de los últimos 60 s y la zona adecuada sombreada.
+  - Funciona también durante la espera de posicionamiento (antes de presionar "Estoy en posición"), para ubicar a la persona antes de medir.
+  - La zona adecuada (40–150 cm por defecto), la escala del medidor (300 cm) y la unidad se configuran en el desplegable *Medidor de distancia: zona adecuada*.
+  - Si no llegan datos `DIST` por más de 5 s, el medidor indica *Sin datos recientes*.
 - Gráficos en vivo (actualizados cada segundo) con opciones de eje X, ventana (*Medición actual*, *Últimos 60 s*, *Todo*), sombreado de fases y filtro Savitzky-Golay.
 - Botón **Detener adquisición**.
 
@@ -170,7 +174,7 @@ Ambos formatos son los mismos que generan los scripts originales, por lo que los
   3. Frecuencia respiratoria (BR)
 - **Selección de medición:** una medición específica o todas.
 - **Eje X:** *Índice de muestra* (igual al script original) o *Tiempo (s)*. En modo tiempo, las fases `NORMAL`, `PREP`, `HOLD` y `RECOVERY` se sombrean con colores. Las 5 muestras de cada trama BW se reparten uniformemente en el intervalo entre tramas.
-- **Resumen por fase:** media, desviación estándar y cantidad de datos de HR y BR por medición y fase.
+- **Resumen por fase:** media, desviación estándar y cantidad de datos de HR, BR y distancia por medición y fase.
 - **Exportar imágenes:** genera un ZIP con una imagen `medicion_XX.png` por medición (Matplotlib, mismo estilo de `HRBRWF.py`, DPI configurable, 300 por defecto).
 - **Datos crudos:** tabla con el CSV original.
 
