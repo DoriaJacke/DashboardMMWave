@@ -39,6 +39,16 @@ def records_to_long(records: list[dict]) -> pd.DataFrame:
     return pd.DataFrame.from_records(records, columns=LONG_COLUMNS)
 
 
+# Lecturas de la placa CMAE en memoria (para graficar en vivo)
+PBM_RECORD_COLUMNS = ["t", "medicion", "fase", "bpm", "spo2", "bpm_ok", "spo2_ok"]
+
+
+def pbm_records_to_frame(records: list[dict]) -> pd.DataFrame:
+    if not records:
+        return pd.DataFrame(columns=PBM_RECORD_COLUMNS)
+    return pd.DataFrame.from_records(records, columns=PBM_RECORD_COLUMNS)
+
+
 def sequence_to_long(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     ts = pd.to_datetime(out["timestamp"], errors="coerce")

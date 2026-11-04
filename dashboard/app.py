@@ -20,11 +20,15 @@ from acquisition import (
     SerialSource,
     SimulatedSource,
     list_serial_ports,
+    pbm_path_for,
 )
+from cmae_conexion import Estado, PlacaCMAE, nombre_ble
+from cmae_protocolo import Lectura
 from data_io import (
     FORMATO_CONTINUO,
     FORMATO_SECUENCIA,
     load_csv,
+    pbm_records_to_frame,
     phase_summary,
     records_to_long,
 )
@@ -38,6 +42,8 @@ from plots import (
     figure_distance_gauge,
     figure_distance_trend,
     figure_hrbrwf,
+    figure_pbm,
+    figure_ppg,
     savgol_window,
 )
 
@@ -75,6 +81,11 @@ def get_manager() -> AcquisitionManager:
     return AcquisitionManager()
 
 
+@st.cache_resource
+def get_placa() -> PlacaCMAE:
+    return PlacaCMAE()
+
+
 @st.cache_data(show_spinner="Cargando CSV...")
 def cached_load(data: bytes):
     return load_csv(data)
@@ -86,6 +97,25 @@ def fmt_value(value, unit: str = "", decimals: int = 0) -> str:
     if isinstance(value, str):
         return value
     return f"{value:.{decimals}f}{unit}"
+
+
+def bpm_texto(lectura: Lectura | None) -> str:
+    return f"{lectura.bpm:.0f} BPM" if lectura is not None and lectura.bpm_ok else "—"
+
+
+def spo2_texto(lectura: Lectura | None) -> str:
+    return f"{lectura.spo2:.0f} %" if lectura is not None and lectura.spo2_ok else "—"
+
+
+def lectura_aviso(lectura: Lectura | None) -> str | None:
+    """Por qué no hay BPM/SpO2 que mostrar, o None si los hay."""
+    if lectura is None:
+        return "Sin datos recientes de la placa."
+    if not lectura.dedo:
+        return "Sin dedo en el sensor MAX30102."
+    if not (lectura.bpm_ok and lectura.spo2_ok):
+        return "Calculando BPM y SpO2, mantén el dedo quieto."
+    return None
 
 
 # ============================================================
@@ -229,6 +259,8 @@ def render_config(manager: AcquisitionManager) -> None:
             protocol = ContinuousProtocol(duracion=float(duracion) or None)
             default_name = f"MR60BHA1_experimento_{stamp}.csv"
 
+    render_placa_config()
+
     st.subheader("Archivo de salida")
     nombre = st.text_input(
         f"Se guardará en {DATA_DIR}", value=default_name, key=f"archivo_{proto}_{stamp}",
@@ -236,10 +268,17 @@ def render_config(manager: AcquisitionManager) -> None:
     if not nombre.lower().endswith(".csv"):
         nombre += ".csv"
     output_path = DATA_DIR / nombre
+    pbm_path = pbm_path_for(output_path)
+    st.caption(f"Si la placa CMAE está conectada al iniciar, sus lecturas se guardarán en `{pbm_path.name}`.")
 
     if st.button("Iniciar adquisición", type="primary"):
         if output_path.exists():
             st.error(f"El archivo {output_path.name} ya existe. Elige otro nombre.")
+            return
+        placa = get_placa()
+        placa_sesion = placa if placa.disponible else None
+        if placa_sesion is not None and pbm_path.exists():
+            st.error(f"El archivo {pbm_path.name} ya existe. Elige otro nombre.")
             return
         if fuente == FUENTE_SERIAL:
             if not port:
@@ -248,9 +287,56 @@ def render_config(manager: AcquisitionManager) -> None:
             factory = lambda: SerialSource(port, int(baudrate))
         else:
             factory = SimulatedSource
-        manager.start(factory, protocol, output_path)
+        manager.start(factory, protocol, output_path, placa_sesion)
         del st.session_state["stamp"]
         st.rerun()
+
+
+# ============================================================
+# PLACA BIOMÉDICA CMAE: CONEXIÓN
+# ============================================================
+
+def render_placa_config() -> None:
+    placa = get_placa()
+    st.subheader("Placa biomédica CMAE (opcional)")
+    c1, c2 = st.columns([1, 3])
+    if placa.activa:
+        c1.markdown(f"**{nombre_ble(placa.numero)}**")
+        c2.button("Desconectar placa", on_click=placa.desconectar, key="placa_desconectar")
+    else:
+        numero = int(c1.number_input("Número de dispositivo", min_value=1, max_value=99, value=1, step=1, key="placa_numero"))
+        c2.button("Conectar placa", on_click=placa.conectar, args=(numero,), key="placa_conectar")
+        c2.caption(f"Se buscará {nombre_ble(numero)} por Bluetooth.")
+    placa_estado_panel()
+
+
+@st.fragment(run_every=1.0)
+def placa_estado_panel() -> None:
+    placa = get_placa()
+    estado = placa.estado
+    # Si el estado cambió (por ejemplo terminó de conectar), se redibuja la página
+    # completa para que el botón Conectar/Desconectar quede al día.
+    if st.session_state.get("placa_estado_visto", estado) != estado:
+        st.session_state.placa_estado_visto = estado
+        st.rerun()
+    st.session_state.placa_estado_visto = estado
+
+    if estado == Estado.CONECTADA:
+        lectura = placa.ultima()
+        st.success(f"Conectada a {placa.detalle}. Al iniciar, sus lecturas se guardarán junto a las del radar.")
+        st.caption(
+            f"Ahora: {bpm_texto(lectura)} · SpO2 {spo2_texto(lectura)} · tramas recibidas: {placa.tramas_ok}"
+            + (f" · {lectura_aviso(lectura)}" if lectura_aviso(lectura) else "")
+        )
+    elif estado == Estado.RECONECTANDO:
+        st.warning(f"Se perdió la conexión con la placa. {placa.detalle}")
+    elif estado in (Estado.CONECTANDO, Estado.DESCONECTANDO):
+        st.info(placa.detalle or f"{estado.value}...")
+    elif estado == Estado.ERROR:
+        st.error(f"Error de conexión. {placa.detalle}")
+        st.caption("Sin placa, la adquisición será solo del radar.")
+    else:
+        st.info("Sin placa conectada: la adquisición será solo del radar.")
 
 
 # ============================================================
@@ -331,21 +417,78 @@ def live_panel(savgol: SavgolConfig | None, zone: DistanceZone) -> None:
         st.caption("El radar aún no ha enviado datos de distancia (líneas `DIST,<valor>`).")
 
     long = records_to_long(records)
+    pbm = pbm_records_to_frame(session.snapshot_pbm()) if session.placa is not None else None
     ventana = st.session_state.get("live_ventana", VENTANA_MEDICION)
     if not long.empty:
         if ventana == VENTANA_MEDICION and status.medicion:
             long = long[long["medicion"] == status.medicion]
         elif ventana == VENTANA_60S:
             long = long[long["t"] >= long["t"].max() - 60]
+    if pbm is not None and not pbm.empty:
+        if ventana == VENTANA_MEDICION and status.medicion:
+            pbm = pbm[pbm["medicion"] == status.medicion]
+        elif ventana == VENTANA_60S:
+            pbm = pbm[pbm["t"] >= pbm["t"].max() - 60]
+
+    x_mode = st.session_state.get("live_x", X_TIEMPO)
+    show_phases = st.session_state.get("live_fases", True)
+    # Con placa, los dos gráficos usan el mismo rango de tiempo para compararlos.
+    x_range = shared_time_range(long, pbm) if pbm is not None and x_mode == X_TIEMPO else None
 
     titulo = f"Medición {status.medicion} — MR60BHA1" if status.total else "Captura continua — MR60BHA1"
     fig = figure_hrbrwf(
         long, titulo,
-        x_mode=st.session_state.get("live_x", X_TIEMPO),
-        show_phases=st.session_state.get("live_fases", True),
+        x_mode=x_mode,
+        show_phases=show_phases,
         savgol=savgol,
+        x_range=x_range,
     )
     st.plotly_chart(fig, width="stretch", theme=None, key="live_chart")
+
+    if session.placa is not None:
+        render_pbm_live(session, pbm, long, x_mode, show_phases, x_range)
+    else:
+        st.caption("Esta adquisición no incluye la placa CMAE.")
+
+
+def shared_time_range(long, pbm) -> tuple[float, float] | None:
+    tiempos = [df["t"].dropna() for df in (long, pbm) if df is not None and not df.empty]
+    tiempos = [t for t in tiempos if not t.empty]
+    if not tiempos:
+        return None
+    lo = min(float(t.min()) for t in tiempos)
+    hi = max(float(t.max()) for t in tiempos)
+    return (lo, hi) if hi > lo else None
+
+
+def render_pbm_live(session, pbm, phases_df, x_mode: str, show_phases: bool, x_range) -> None:
+    placa = session.placa
+    st.subheader("Placa biomédica CMAE")
+    if placa.estado == Estado.RECONECTANDO:
+        st.warning(
+            "Se perdió la conexión con la placa y se está reconectando sola. "
+            f"Mientras tanto no se guardan sus lecturas; el radar sigue grabando. {placa.detalle}"
+        )
+    elif placa.estado != Estado.CONECTADA:
+        st.warning(f"Placa CMAE: {placa.estado.value.lower()}. Sus lecturas no se están guardando.")
+
+    lectura = placa.ultima()
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("BPM placa", bpm_texto(lectura))
+    m2.metric("SpO2 placa", spo2_texto(lectura))
+    m3.metric("Estado placa", placa.estado.value)
+    m4.metric("Lecturas placa guardadas", f"{session.n_pbm}")
+    aviso = lectura_aviso(lectura)
+    st.caption(
+        (f"{aviso} · " if aviso else "")
+        + f"Tramas recibidas: {placa.tramas_ok} · descartadas: {placa.tramas_malas} · cortes de conexión: {placa.cortes}"
+    )
+
+    fig = figure_pbm(pbm, phases_df, x_mode=x_mode, show_phases=show_phases, x_range=x_range)
+    st.plotly_chart(fig, width="stretch", theme=None, key="live_pbm_chart")
+
+    t_ppg, ir = placa.ppg()
+    st.plotly_chart(figure_ppg(t_ppg, ir), width="stretch", theme=None, key="live_ppg_chart")
 
 
 def render_live(manager: AcquisitionManager) -> None:
@@ -382,6 +525,15 @@ def render_last_session(manager: AcquisitionManager) -> None:
     records, _ = session.snapshot()
     fmt = FORMATO_SECUENCIA if session.protocol.n_mediciones else FORMATO_CONTINUO
     render_analysis(records_to_long(records), fmt, key="last")
+
+    if session.placa is not None:
+        st.subheader("Placa biomédica CMAE")
+        st.markdown(f"Archivo: `{session.pbm_path}` · lecturas guardadas: **{session.n_pbm}**")
+        fig = figure_pbm(
+            pbm_records_to_frame(session.snapshot_pbm()), records_to_long(records),
+            title="BPM y SpO2 de la placa — toda la adquisición", x_mode=X_TIEMPO,
+        )
+        st.plotly_chart(fig, width="stretch", theme=None, key="last_pbm_chart")
 
 
 def page_acquisition() -> None:
@@ -436,11 +588,22 @@ def page_analysis() -> None:
 # NAVEGACIÓN
 # ============================================================
 
+@st.fragment(run_every=1.0)
+def placa_sidebar() -> None:
+    """Estado de la placa en la barra lateral; se refresca solo, también durante la adquisición."""
+    placa = get_placa()
+    if placa.estado == Estado.CONECTADA:
+        st.caption(f"● Placa CMAE conectada ({placa.detalle})")
+    elif placa.estado == Estado.RECONECTANDO:
+        st.caption("● Placa CMAE reconectando")
+
+
 with st.sidebar:
     st.header("Dashboard mmWave")
     pagina = st.radio("Sección", ["Adquisición", "Análisis"])
     if get_manager().busy:
         st.success("● Adquisición en curso")
+    placa_sidebar()
 
 if pagina == "Adquisición":
     page_acquisition()

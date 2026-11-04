@@ -6,6 +6,10 @@
 #
 #   RetentionProtocol  -> basado en MEDICION20SEQRES.py
 #   ContinuousProtocol -> basado en tomadatosSEPT.py
+#
+# Si la placa biomédica CMAE está conectada al iniciar, la sesión
+# guarda además sus lecturas de BPM y SpO2 en un CSV hermano
+# (PBM_...), con la misma fase y la misma hora del PC que el radar.
 # ============================================================
 
 from __future__ import annotations
@@ -19,16 +23,42 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 import serial
 from serial.tools import list_ports
 
+if TYPE_CHECKING:
+    from cmae_conexion import PlacaCMAE
+    from cmae_protocolo import Lectura
+
 WAVE_COLS = ["valor_1", "valor_2", "valor_3", "valor_4", "valor_5"]
+
+RADAR_PREFIX = "MR60BHA1"
+PBM_PREFIX = "PBM"  # Placa BioMédica CMAE
+PBM_COLUMNS = [
+    "timestamp", "medicion", "fase", "condicion", "flag_hold",
+    "bpm", "spo2", "dedo_detectado", "bpm_valido", "spo2_valido",
+]
 
 
 def now_iso() -> str:
     return datetime.now().isoformat(timespec="milliseconds")
+
+
+def pbm_path_for(radar_path: str | Path) -> Path:
+    """CSV de la placa junto al del radar, con el mismo ID: MR60BHA1_x.csv -> PBM_x.csv."""
+    radar_path = Path(radar_path)
+    name = radar_path.name
+    if name.startswith(RADAR_PREFIX):
+        name = PBM_PREFIX + name[len(RADAR_PREFIX):]
+    else:
+        name = f"{PBM_PREFIX}_{name}"
+    return radar_path.with_name(name)
+
+
+def _num(value: float) -> str:
+    return "" if math.isnan(value) else f"{value:.2f}"
 
 
 def to_float(value: str) -> Optional[float]:
@@ -164,11 +194,25 @@ class AcquisitionSession:
     en el CSV (formato del protocolo) y se guarda en memoria para graficar.
     """
 
-    def __init__(self, source_factory: Callable[[], object], protocol, output_path: str | Path):
+    def __init__(
+        self,
+        source_factory: Callable[[], object],
+        protocol,
+        output_path: str | Path,
+        placa: Optional[PlacaCMAE] = None,
+    ):
         self.protocol = protocol
         self.output_path = Path(output_path)
         self._source_factory = source_factory
         self.source = None
+
+        # Placa CMAE (opcional): sus lecturas van al CSV hermano PBM_...
+        self.placa = placa
+        self.pbm_path = pbm_path_for(self.output_path) if placa is not None else None
+        self.pbm_records: list[dict] = []
+        self.n_pbm = 0
+        self._pbm_file = None
+        self._pbm_writer = None
 
         self.lock = threading.Lock()
         self.ctx = Context()
@@ -217,9 +261,17 @@ class AcquisitionSession:
             self._writer.writerow(self.protocol.columns)
             self._file.flush()
 
+            if self.placa is not None:
+                self._pbm_file = open(self.pbm_path, "w", newline="", encoding="utf-8")
+                self._pbm_writer = csv.writer(self._pbm_file)
+                self._pbm_writer.writerow(PBM_COLUMNS)
+                self._pbm_file.flush()
+
             self.t0 = time.monotonic()
             reader = threading.Thread(target=self._reader_loop, daemon=True)
             reader.start()
+            if self.placa is not None:
+                self.placa.escuchar(self._handle_lectura)
 
             self.protocol.run(self)
             if not self.stop_event.is_set():
@@ -228,6 +280,12 @@ class AcquisitionSession:
             self.status.error = str(exc)
         finally:
             self.stop_event.set()
+            if self.placa is not None:
+                self.placa.dejar_de_escuchar(self._handle_lectura)
+                with self.lock:
+                    if self._pbm_file is not None:
+                        self._pbm_file.close()
+                    self._pbm_writer = None
             if reader is not None:
                 reader.join(timeout=3)
             if self.source is not None:
@@ -295,6 +353,30 @@ class AcquisitionSession:
         self._writer.writerow(row)
         self._file.flush()
         self.n_saved += 1
+
+    # --------------------------------------------------------
+    # Lecturas de la placa CMAE (llegan desde el hilo BLE)
+    # --------------------------------------------------------
+
+    def _handle_lectura(self, lectura: Lectura) -> None:
+        """Guarda cada lectura de la placa con la fase vigente, igual que una línea del radar."""
+        t = time.monotonic() - self.t0
+        with self.lock:
+            ctx = self.ctx
+            if not ctx.recording or self._pbm_writer is None:
+                return
+            self._pbm_writer.writerow([
+                now_iso(), ctx.medicion, ctx.fase, ctx.condicion, ctx.flag_hold,
+                _num(lectura.bpm), _num(lectura.spo2),
+                int(lectura.dedo), int(lectura.bpm_valido), int(lectura.spo2_valido),
+            ])
+            self._pbm_file.flush()
+            self.n_pbm += 1
+            self.pbm_records.append({
+                "t": t, "medicion": ctx.medicion, "fase": ctx.fase,
+                "bpm": lectura.bpm, "spo2": lectura.spo2,
+                "bpm_ok": lectura.bpm_ok, "spo2_ok": lectura.spo2_ok,
+            })
 
     # --------------------------------------------------------
     # Herramientas para los protocolos
@@ -366,6 +448,10 @@ class AcquisitionSession:
         now = time.monotonic() - self.t0
         age = None if t_last is None else now - t_last
         return self.latest["DIST"], age, [(t - now, d) for t, d in history]
+
+    def snapshot_pbm(self) -> list[dict]:
+        with self.lock:
+            return list(self.pbm_records)
 
 
 def parse_record(tipo: str, parts: list[str], t: float, medicion, fase) -> Optional[dict]:
@@ -528,9 +614,9 @@ class AcquisitionManager:
     def busy(self) -> bool:
         return self.session is not None and self.session.running
 
-    def start(self, source_factory, protocol, output_path) -> AcquisitionSession:
+    def start(self, source_factory, protocol, output_path, placa: Optional[PlacaCMAE] = None) -> AcquisitionSession:
         if self.busy:
             raise RuntimeError("Ya hay una adquisición en curso.")
-        self.session = AcquisitionSession(source_factory, protocol, output_path)
+        self.session = AcquisitionSession(source_factory, protocol, output_path, placa)
         self.session.start()
         return self.session

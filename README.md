@@ -4,6 +4,8 @@ Dashboard preliminar para proyecto de título sobre el uso de radar de onda mili
 
 El sistema adquiere datos de un radar **Seeed MR60BHA1 (60 GHz)** conectado a un **ESP32**, los registra en CSV siguiendo protocolos de medición definidos, y permite visualizarlos y analizarlos desde un dashboard web hecho con **Streamlit**.
 
+Opcionalmente, registra al mismo tiempo el **BPM y el SpO2 de la placa biomédica CMAE** (conectada por Bluetooth), como referencia para validar al radar. Ver [Placa biomédica CMAE (PBM)](#placa-biomédica-cmae-pbm).
+
 ---
 
 ## Contenido del repositorio
@@ -14,7 +16,9 @@ DashboardMMWave/
 │   ├── app.py                 Interfaz (secciones Adquisición y Análisis)
 │   ├── acquisition.py         Fuentes de datos, sesión de adquisición y protocolos
 │   ├── data_io.py             Lectura de CSV, intervalos de fase y resúmenes
-│   └── plots.py               Gráficos (Plotly, Matplotlib) y filtro Savitzky-Golay
+│   ├── plots.py               Gráficos (Plotly, Matplotlib) y filtro Savitzky-Golay
+│   ├── cmae_conexion.py       Conexión BLE con la placa CMAE (con reconexión automática)
+│   └── cmae_protocolo.py      Protocolo de la placa CMAE: fragmentos BLE, trama AA55, BPM, SpO2 y PPG
 ├── CodigosBaseMirko/          Scripts originales en que se basa el dashboard
 │   ├── MEDICION20SEQRES.py    Protocolo de 20 mediciones con retención respiratoria
 │   ├── tomadatosSEPT.py       Captura continua
@@ -68,7 +72,7 @@ Requiere Python 3.10 o superior.
 pip install -r requirements.txt
 ```
 
-Dependencias: `streamlit`, `pyserial`, `pandas`, `numpy`, `plotly`, `matplotlib`, `scipy`.
+Dependencias: `streamlit`, `pyserial`, `pandas`, `numpy`, `plotly`, `matplotlib`, `scipy` y `bleak` (Bluetooth, para la placa CMAE).
 
 ## Ejecución
 
@@ -165,6 +169,50 @@ Ambos formatos son los mismos que generan los scripts originales, por lo que los
 
 ---
 
+## Placa biomédica CMAE (PBM)
+
+La placa CMAE se usa como referencia para validar la frecuencia cardíaca del radar. Su conexión es **opcional**: si no está conectada al iniciar, la adquisición es solo del radar.
+
+### Conexión
+
+- **Bluetooth (BLE).** El PC debe tener Bluetooth. La placa se busca por su nombre `CMAE-<número>-S3-N16R8`. En la sección *Placa biomédica CMAE (opcional)* se indica el número de dispositivo y se presiona **Conectar placa** (antes de iniciar la adquisición).
+- Al conectar, el dashboard le envía `START`; al desconectar, `STOP`. Los datos llegan en fragmentos CMAE-FRAG que se rearman en tramas `AA 55` con verificación CRC16 (mismo protocolo que el receptor original de la placa).
+- **Si la conexión se corta** (o la placa deja de enviar datos por 10 s), el radar sigue grabando, aparece un aviso y la placa intenta **reconectarse sola** hasta lograrlo o hasta presionar *Desconectar placa*. Mientras está desconectada, su archivo queda con un hueco.
+
+### Qué se registra
+
+| Dato | Se muestra | Se guarda |
+|---|---|---|
+| BPM (`bpm_float` del MAX30102, unas 7 lecturas por segundo) | Sí, en vivo y en un gráfico propio | Sí |
+| SpO2 (MAX30102) | Sí, en vivo y en un gráfico propio | Sí |
+| Onda PPG infrarroja (104 muestras por segundo) | Sí, últimos 10 s | **No** |
+| ECG | No | No |
+
+Las lecturas se guardan **solo durante las fases** del protocolo, igual que el radar, y cada una lleva la **hora del PC** al recibirla y la fase vigente. Así las ventanas de tiempo (fases) son las mismas para el radar y la placa.
+
+### Archivo de la placa
+
+Se guarda en `datos/` junto al CSV del radar, con el **mismo ID**: el prefijo `MR60BHA1` se reemplaza por `PBM` (si el nombre no empieza con `MR60BHA1`, se le antepone `PBM_`).
+
+```
+MR60BHA1_mediciones_20261104_101500.csv   ← radar
+PBM_mediciones_20261104_101500.csv        ← placa CMAE
+```
+
+Columnas (el mismo formato para ambos protocolos; en captura continua `fase` es `CONTINUO`):
+
+```
+timestamp, medicion, fase, condicion, flag_hold, bpm, spo2, dedo_detectado, bpm_valido, spo2_valido
+```
+
+- `timestamp`: fecha y hora ISO del PC con milisegundos (mismo reloj que el CSV del radar).
+- `bpm`, `spo2`: valores enviados por la placa con 2 decimales; vacíos si la placa no tiene lectura.
+- `dedo_detectado`, `bpm_valido`, `spo2_valido`: `1` o `0` según la placa. **Se guardan todas las lecturas**, también las no válidas; el filtrado se hace en el análisis.
+
+En la vista en vivo, el gráfico de la placa usa el mismo eje de tiempo y el mismo sombreado de fases que el del radar. Solo dibuja las lecturas válidas (dedo detectado y valor válido).
+
+---
+
 ## Sección Análisis
 
 - **Origen de datos:** archivos de la carpeta `datos/` (ordenados del más reciente al más antiguo) o un CSV subido. El formato (secuencia o continuo) se detecta automáticamente.
@@ -202,3 +250,6 @@ Disponible en Análisis y en la vista en vivo. Al activarlo se superponen la **o
 - Solo se ejecuta una adquisición a la vez (compartida entre pestañas del navegador).
 - No se ha validado aún con el radar real la unidad de `DIST` ni la escala de `BW`.
 - HR y BR son estimaciones internas del sensor; no se dispone de la señal de fase cruda del radar ni de una waveform cardíaca.
+- Placa CMAE: la integración se probó con una placa simulada que reproduce una captura real (`.bin`); falta la prueba con la placa real en un PC con Bluetooth.
+- Placa CMAE: la sección Análisis todavía no lee los archivos `PBM_...`.
+- Placa CMAE: la placa no entrega frecuencia respiratoria, así que no sirve como referencia para `BR`.

@@ -137,6 +137,20 @@ def savgol_label(t: np.ndarray, cfg: SavgolConfig) -> str:
 # FIGURA INTERACTIVA (PLOTLY)
 # ============================================================
 
+def add_phase_shading(fig: go.Figure, df: pd.DataFrame) -> None:
+    """Sombrea las fases (marcas PHASE/END de df) en todas las filas de la figura."""
+    for fase, t0, t1 in phase_intervals(df):
+        color = PHASE_COLORS.get(fase)
+        if color is None or t1 <= t0:
+            continue
+        fig.add_vrect(x0=t0, x1=t1, fillcolor=color, line_width=0, layer="below", row="all", col=1)
+        fig.add_annotation(
+            x=(t0 + t1) / 2, y=0.98, xref="x", yref="y domain",
+            text=fase, showarrow=False, yanchor="top",
+            font=dict(size=10, color="#555"),
+        )
+
+
 def figure_hrbrwf(
     df: pd.DataFrame,
     title: str = "",
@@ -144,6 +158,7 @@ def figure_hrbrwf(
     show_phases: bool = True,
     height: int = 820,
     savgol: SavgolConfig | None = None,
+    x_range: tuple[float, float] | None = None,
 ) -> go.Figure:
     series = extract_series(df)
     use_time = x_mode == X_TIEMPO
@@ -201,18 +216,17 @@ def figure_hrbrwf(
         )
 
     if use_time and show_phases:
-        for fase, t0, t1 in phase_intervals(df):
-            color = PHASE_COLORS.get(fase)
-            if color is None or t1 <= t0:
-                continue
-            fig.add_vrect(x0=t0, x1=t1, fillcolor=color, line_width=0, layer="below", row="all", col=1)
-            fig.add_annotation(
-                x=(t0 + t1) / 2, y=0.98, xref="x", yref="y domain",
-                text=fase, showarrow=False, yanchor="top",
-                font=dict(size=10, color="#555"),
-            )
+        add_phase_shading(fig, df)
+    if use_time and x_range is not None:
+        fig.update_xaxes(range=list(x_range))
 
-    for ann in fig.layout.annotations[:3]:
+    _style_figure(fig, title, height, n_subplot_titles=3)
+    return fig
+
+
+def _style_figure(fig: go.Figure, title: str, height: int, n_subplot_titles: int) -> None:
+    """Estilo común de las figuras (el de HRBRWF.py)."""
+    for ann in fig.layout.annotations[:n_subplot_titles]:
         ann.update(x=0, xanchor="left", font=dict(size=14, color="#111"))
 
     axis_style = dict(
@@ -233,6 +247,121 @@ def figure_hrbrwf(
         legend=dict(orientation="h", x=1, xanchor="right", y=1.0, yanchor="bottom", font=dict(size=11)),
         uirevision="constant",
     )
+
+
+# ============================================================
+# PLACA BIOMÉDICA CMAE (PBM): BPM, SpO2 Y ONDA PPG
+# ============================================================
+
+PBM_SUBPLOTS = [
+    ("BPM — placa CMAE", "BPM", "bpm", "bpm_ok"),
+    ("SpO2 — placa CMAE", "SpO2 (%)", "spo2", "spo2_ok"),
+]
+PBM_GAP_S = 1.5        # sin lecturas por más que esto: la línea se corta
+PPG_MAX_POINTS = 800   # puntos dibujados de la onda PPG (conserva mínimos y máximos)
+
+
+def _break_gaps(t: np.ndarray, y: np.ndarray, max_gap: float) -> tuple[np.ndarray, np.ndarray]:
+    """Inserta NaN donde faltan datos, para que la línea no una los dos lados del hueco."""
+    if len(t) < 2:
+        return t, y
+    cuts = np.where(np.diff(t) > max_gap)[0] + 1
+    if len(cuts) == 0:
+        return t, y
+    t = np.insert(t.astype(float), cuts, np.nan)
+    y = np.insert(y.astype(float), cuts, np.nan)
+    return t, y
+
+
+def figure_pbm(
+    pbm: pd.DataFrame,
+    phases_df: pd.DataFrame,
+    title: str = "",
+    x_mode: str = X_TIEMPO,
+    show_phases: bool = True,
+    height: int = 520,
+    x_range: tuple[float, float] | None = None,
+) -> go.Figure:
+    """
+    BPM y SpO2 de la placa, cada uno en su fila. Solo se dibujan las lecturas
+    válidas (dedo detectado y valor válido); los huecos cortan la línea.
+    Las fases se toman de las marcas del radar (phases_df).
+    """
+    use_time = x_mode == X_TIEMPO
+    fig = make_subplots(
+        rows=2, cols=1, shared_xaxes=use_time, vertical_spacing=0.14,
+        subplot_titles=[s[0] for s in PBM_SUBPLOTS],
+    )
+
+    for row, (name, ylabel, col, ok_col) in enumerate(PBM_SUBPLOTS, start=1):
+        valid = pbm[pbm[ok_col]] if not pbm.empty else pbm
+        y = valid[col].to_numpy(dtype=float) if not valid.empty else np.array([])
+        if use_time:
+            x = valid["t"].to_numpy(dtype=float) if not valid.empty else np.array([])
+            x, y = _break_gaps(x, y, PBM_GAP_S)
+        else:
+            x = np.arange(len(y))
+        fig.add_trace(
+            go.Scatter(
+                x=x, y=y, mode="lines+markers", name=name,
+                line=dict(color=COLOR_LINEA, width=1.2),
+                marker=dict(color=COLOR_PUNTOS, size=4),
+                showlegend=False,
+                hovertemplate=f"%{{y:.1f}} {ylabel}<extra></extra>",
+            ),
+            row=row, col=1,
+        )
+        if len(y) == 0 or np.all(np.isnan(y)):
+            fig.add_annotation(
+                text="Sin lecturas válidas", showarrow=False,
+                x=0.5, y=0.5, xref=f"x{row if row > 1 else ''} domain", yref=f"y{row if row > 1 else ''} domain",
+                font=dict(size=13, color="#777"),
+            )
+        fig.update_yaxes(title_text=ylabel, row=row, col=1)
+        fig.update_xaxes(
+            title_text=X_TIEMPO if use_time else "Índice de lectura",
+            showticklabels=True, row=row, col=1,
+        )
+
+    if use_time and show_phases:
+        add_phase_shading(fig, phases_df)
+    if use_time and x_range is not None:
+        fig.update_xaxes(range=list(x_range))
+
+    _style_figure(fig, title, height, n_subplot_titles=2)
+    return fig
+
+
+def _downsample_minmax(t: np.ndarray, y: np.ndarray, max_points: int) -> tuple[np.ndarray, np.ndarray]:
+    """Reduce puntos conservando el mínimo y el máximo de cada tramo (no se pierden picos)."""
+    if len(t) <= max_points:
+        return t, y
+    edges = np.linspace(0, len(t), max_points // 2 + 1, dtype=int)[:-1]
+    lows = np.minimum.reduceat(y, edges)
+    highs = np.maximum.reduceat(y, edges)
+    return np.repeat(t[edges], 2), np.column_stack((lows, highs)).ravel()
+
+
+def figure_ppg(t_s: np.ndarray, ir: np.ndarray, window_s: float = 10.0, height: int = 260) -> go.Figure:
+    """Onda PPG (luz infrarroja) de los últimos window_s segundos. Se muestra, no se guarda."""
+    visible = t_s >= -window_s
+    t, y = _downsample_minmax(t_s[visible], ir[visible], PPG_MAX_POINTS)
+    fig = go.Figure(
+        go.Scatter(
+            x=t, y=y, mode="lines", name="PPG",
+            line=dict(color=COLOR_LINEA, width=1.2),
+            hovertemplate="%{y:.0f}<extra></extra>",
+        )
+    )
+    if len(y) == 0:
+        fig.add_annotation(
+            text="Sin señal PPG", showarrow=False, x=0.5, y=0.5,
+            xref="x domain", yref="y domain", font=dict(size=13, color="#777"),
+        )
+    fig.update_xaxes(title_text="Segundos atrás", range=[-window_s, 0])
+    fig.update_yaxes(title_text="IR (cuentas)")
+    _style_figure(fig, f"Onda PPG infrarroja — placa CMAE (últimos {window_s:g} s)", height, n_subplot_titles=0)
+    fig.update_layout(title=dict(font=dict(size=14), x=0, xanchor="left"), margin=dict(t=50))
     return fig
 
 
