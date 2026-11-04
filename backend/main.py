@@ -131,6 +131,7 @@ def status_json(session: AcquisitionSession) -> dict:
         "t0_wall": session.t0_wall.isoformat(timespec="milliseconds"),
         "latest": latest,
         "n_lines": session.n_lines,
+        "n_lines_saved": session.n_lines_saved,
         "n_saved": session.n_saved,
         "n_markers": len(session.markers),
     }
@@ -349,7 +350,8 @@ def create_app(data_dir: Optional[Path] = None) -> FastAPI:
 
         records, _ = session.snapshot()
         df = records_to_long(records)
-        if df["medicion"].dropna().empty:
+        n_images = int(df["medicion"].dropna().nunique())
+        if not n_images:
             raise HTTPException(400, "No hay datos para exportar.")
 
         with export_lock:
@@ -367,7 +369,10 @@ def create_app(data_dir: Optional[Path] = None) -> FastAPI:
         return Response(
             data,
             media_type="application/zip",
-            headers={"Content-Disposition": 'attachment; filename="graficos_mediciones.zip"'},
+            headers={
+                "Content-Disposition": 'attachment; filename="graficos_mediciones.zip"',
+                "X-Image-Count": str(n_images),
+            },
         )
 
     # --------------------------------------------------------

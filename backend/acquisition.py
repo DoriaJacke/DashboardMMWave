@@ -198,8 +198,9 @@ class AcquisitionSession:
         self.latest_t: dict = {}
         # (t, distancia) de todas las líneas DIST, también las de fases que no se graban.
         self.dist_history: list[tuple[float, float]] = []
-        self.n_lines = 0
-        self.n_saved = 0
+        self.n_lines = 0         # líneas recibidas del sensor
+        self.n_lines_saved = 0   # de esas líneas, las que se guardaron en el CSV
+        self.n_saved = 0         # filas del CSV (también incluye PHASE, END y MARK)
 
         self.stop_event = threading.Event()
         self.user_ready = threading.Event()
@@ -303,6 +304,7 @@ class AcquisitionSession:
             row = self.protocol.format_line(line, parts, ctx, self)
             if row is not None:
                 self._write(row)
+                self.n_lines_saved += 1
 
             record = parse_record(tipo, parts, t, ctx.medicion, ctx.fase)
             if record is not None:

@@ -1,0 +1,94 @@
+/* Tema Bootstrap y animaciones del Dashboard mmWave MR60BHA1.
+   Se carga DESPUÉS de Bootstrap. Valores tomados del traspaso de diseño (README §8 y §9). */
+
+body { margin: 0; background: #f2f2f3; }
+a { color: #416180; }
+a:hover { color: #2c455d; }
+
+:root {
+  --bs-body-font-family: "Barlow", system-ui, sans-serif;
+  --bs-body-bg: #f2f2f3;
+  --bs-body-color: #1d1f20;
+  --bs-primary: #5980a6;
+  --bs-primary-rgb: 89, 128, 166;
+  --bs-border-radius: 6px;
+  --bs-border-radius-sm: 4px;
+  --bs-border-radius-lg: 10px;
+  --bs-border-color: rgba(29, 31, 32, .14);
+  --bs-link-color: #416180;
+  --bs-link-hover-color: #2c455d;
+}
+
+/* Encabezados en Barlow Condensed 600 (README §9). */
+h1, h2, h3, h4, h5, h6 { font-family: var(--font-heading); font-weight: 600; }
+
+.btn {
+  font-family: "Barlow Condensed", sans-serif; font-weight: 600; letter-spacing: .01em;
+  transition: background-color .2s, border-color .2s, color .2s, box-shadow .2s, transform .12s;
+}
+.btn:active { transform: translateY(1px); }
+.btn-primary {
+  --bs-btn-bg: #5980a6; --bs-btn-border-color: #5980a6;
+  --bs-btn-hover-bg: #4b6f93; --bs-btn-hover-border-color: #4b6f93;
+  --bs-btn-active-bg: #416180; --bs-btn-active-border-color: #416180;
+  --bs-btn-disabled-bg: #5980a6; --bs-btn-disabled-border-color: #5980a6;
+  --bs-btn-focus-shadow-rgb: 89, 128, 166;
+}
+.btn-outline-secondary {
+  --bs-btn-color: #1d1f20; --bs-btn-border-color: rgba(29, 31, 32, .2);
+  --bs-btn-hover-bg: #e7e7ea; --bs-btn-hover-color: #1d1f20; --bs-btn-hover-border-color: rgba(29, 31, 32, .3);
+  --bs-btn-active-bg: #d4d4d7; --bs-btn-active-color: #1d1f20; --bs-btn-active-border-color: rgba(29, 31, 32, .3);
+  --bs-btn-disabled-color: #1d1f20; --bs-btn-disabled-border-color: rgba(29, 31, 32, .2);
+}
+.btn-outline-primary {
+  --bs-btn-color: #416180; --bs-btn-border-color: rgba(89, 128, 166, .45);
+  --bs-btn-hover-bg: #eef6ff; --bs-btn-hover-color: #2c455d; --bs-btn-hover-border-color: #749dc4;
+  --bs-btn-active-bg: #5980a6; --bs-btn-active-border-color: #5980a6; --bs-btn-active-color: #fff;
+  font-family: "Barlow", sans-serif; font-weight: 400;
+}
+.btn-link { --bs-btn-color: #416180; --bs-btn-hover-color: #2c455d; }
+.form-control:focus, .form-select:focus, .form-check-input:focus {
+  border-color: #749dc4; box-shadow: 0 0 0 .2rem rgba(89, 128, 166, .22);
+}
+.form-check-input:checked { background-color: #5980a6; border-color: #5980a6; }
+.form-range::-webkit-slider-thumb { background-color: #5980a6; }
+.form-range::-moz-range-thumb { background-color: #5980a6; }
+.form-range:focus::-webkit-slider-thumb { box-shadow: 0 0 0 .2rem rgba(89, 128, 166, .25); }
+
+/* Pestañas del resultado (Gráficos / Resumen por fase). */
+.result-pills {
+  gap: 4px;
+  --bs-nav-pills-link-active-bg: var(--color-accent);
+  --bs-nav-link-color: var(--color-accent-700);
+  --bs-nav-link-hover-color: var(--color-accent-800);
+  --bs-nav-link-padding-y: 4px;
+  --bs-nav-link-padding-x: 12px;
+}
+
+/* Modal "Editar siguiente adquisición". */
+.cfg-modal { max-width: 1180px; width: calc(100% - 64px); }
+.cfg-modal .modal-content {
+  background: var(--color-bg); border: 0; border-radius: var(--bs-border-radius-lg);
+  padding: 20px 22px; box-shadow: var(--shadow-lg);
+}
+.modal-backdrop.cfg-backdrop { --bs-backdrop-bg: #1d1f20; --bs-backdrop-opacity: .45; }
+
+/* Tabla de resumen por fase. */
+.summary-table { --bs-table-bg: transparent; font-variant-numeric: tabular-nums; }
+.summary-table thead { position: sticky; top: 0; background: #fff; z-index: 1; }
+
+/* ---------- Animaciones (intensidad media) ---------- */
+@keyframes pulseRing { 0% { box-shadow: 0 0 0 0 rgba(89, 128, 166, .45) } 70% { box-shadow: 0 0 0 16px rgba(89, 128, 166, 0) } 100% { box-shadow: 0 0 0 0 rgba(89, 128, 166, 0) } }
+@keyframes pulseRingW { 0% { box-shadow: 0 0 0 0 rgba(255, 255, 255, .6) } 70% { box-shadow: 0 0 0 18px rgba(255, 255, 255, 0) } 100% { box-shadow: 0 0 0 0 rgba(255, 255, 255, 0) } }
+@keyframes heartbeat { 0%, 100% { transform: scale(1) } 12% { transform: scale(1.28) } 24% { transform: scale(.96) } 36% { transform: scale(1.14) } 50% { transform: scale(1) } }
+@keyframes cellPulse { 0%, 100% { opacity: 1 } 50% { opacity: .5 } }
+@keyframes enterUp { from { opacity: 0; transform: translateY(18px) scale(.98) } to { opacity: 1; transform: none } }
+@keyframes enterDown { from { opacity: 0; transform: translateY(-10px) } to { opacity: 1; transform: none } }
+@keyframes enterRight { from { opacity: 0; transform: translateX(28px) } to { opacity: 1; transform: none } }
+.enter-up { animation: enterUp .45s cubic-bezier(.2, .8, .2, 1); }
+.enter-down { animation: enterDown .36s cubic-bezier(.2, .8, .2, 1); }
+.enter-right { animation: enterRight .36s cubic-bezier(.2, .8, .2, 1); }
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
