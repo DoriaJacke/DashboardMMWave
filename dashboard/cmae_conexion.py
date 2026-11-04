@@ -10,11 +10,15 @@
 #     en memoria para la vista en vivo. La onda PPG no se guarda.
 #   - Si la conexión se pierde después de haber conectado, se
 #     reintenta sola hasta que el usuario presione Desconectar.
+#   - Placa simulada (sin hardware): genera BPM, SpO2 y onda PPG
+#     sintéticos con la misma interfaz, para probar el dashboard.
 # ============================================================
 
 from __future__ import annotations
 
 import asyncio
+import math
+import random
 import threading
 import time
 from collections import deque
@@ -58,13 +62,70 @@ def nombre_ble(numero: int) -> str:
     return f"CMAE-{numero}-S3-N16R8"
 
 
+NOMBRE_SIMULADA = "placa simulada (sin hardware)"
+
+
+class SimuladorPlaca:
+    """
+    Datos sintéticos con el ritmo de la placa real: BPM y SpO2 unas 7 veces
+    por segundo y onda PPG a 104 Hz. Los primeros segundos no son válidos
+    (como el algoritmo real mientras calcula). Durante la retención el BPM
+    baja un poco, igual que en el simulador del radar.
+    """
+
+    LECTURA_HZ = 7.0
+    PPG_HZ = 104.0
+    CALENTAMIENTO_S = 3.0
+
+    def __init__(self) -> None:
+        self._t0 = time.monotonic()
+        self._n_lectura = 0
+        self._n_ppg = 0
+        self._bpm = 72.0
+        self._spo2 = 97.6
+        self._fase_pulso = 0.0
+
+    def paso(self, hold: bool) -> tuple[list[Lectura], list[tuple[float, float]]]:
+        """Genera lo que corresponde al tiempo transcurrido desde el último paso."""
+        ahora = time.monotonic() - self._t0
+
+        ppg: list[tuple[float, float]] = []
+        while self._n_ppg / self.PPG_HZ <= ahora:
+            t = self._n_ppg / self.PPG_HZ
+            self._fase_pulso = (self._fase_pulso + self._bpm / 60.0 / self.PPG_HZ) % 1.0
+            f = self._fase_pulso
+            pulso = math.exp(-((f - 0.18) / 0.07) ** 2) + 0.35 * math.exp(-((f - 0.50) / 0.09) ** 2)
+            ir = 50000.0 + 150.0 * math.sin(2 * math.pi * 0.25 * t) + 600.0 * pulso + random.gauss(0, 12)
+            ppg.append((t * 1000.0, ir))
+            self._n_ppg += 1
+
+        lecturas: list[Lectura] = []
+        while self._n_lectura / self.LECTURA_HZ <= ahora:
+            t = self._n_lectura / self.LECTURA_HZ
+            self._bpm += 0.05 * ((66.0 if hold else 72.0) - self._bpm) + random.gauss(0, 0.25)
+            self._spo2 += 0.05 * ((96.8 if hold else 97.6) - self._spo2) + random.gauss(0, 0.08)
+            self._spo2 = min(self._spo2, 100.0)
+            valido = t >= self.CALENTAMIENTO_S
+            lecturas.append(Lectura(
+                t_ms=t * 1000.0,
+                bpm=self._bpm if valido else math.nan,
+                spo2=self._spo2 if valido else math.nan,
+                dedo=True, bpm_valido=valido, spo2_valido=valido,
+            ))
+            self._n_lectura += 1
+        return lecturas, ppg
+
+
 class PlacaCMAE:
-    """Una conexión a la vez con la placa CMAE por BLE."""
+    """Una conexión a la vez con la placa CMAE, real (BLE) o simulada."""
+
+    SIM_PASO_S = 0.05
 
     def __init__(self) -> None:
         self.estado = Estado.DESCONECTADA
         self.detalle = ""
         self.numero: Optional[int] = None
+        self.simulada = False
         self.tramas_ok = 0
         self.tramas_malas = 0
         self.cortes = 0
@@ -76,6 +137,7 @@ class PlacaCMAE:
         self._conecto_alguna_vez = False
         self._ultimo_dato = 0.0
         self._errores_vistos = 0
+        self._hold = False
 
         self._ultima: Optional[Lectura] = None
         self._ultima_en = 0.0
@@ -97,7 +159,11 @@ class PlacaCMAE:
         """Sirve para grabar: conectada, o reconectando después de un corte."""
         return self.estado in (Estado.CONECTADA, Estado.RECONECTANDO)
 
-    def conectar(self, numero: int) -> None:
+    @property
+    def nombre(self) -> str:
+        return NOMBRE_SIMULADA if self.simulada else nombre_ble(self.numero or 0)
+
+    def conectar(self, numero: int, simulada: bool = False) -> None:
         if self.activa:
             return
         with self._lock:
@@ -105,15 +171,21 @@ class PlacaCMAE:
             self._ppg_t.clear()
             self._ppg_v.clear()
         self.numero = int(numero)
+        self.simulada = bool(simulada)
         self.tramas_ok = 0
         self.tramas_malas = 0
         self.cortes = 0
         self._conecto_alguna_vez = False
+        self._hold = False
         self.estado = Estado.CONECTANDO
         self.detalle = ""
         self._stop.clear()
-        self._thread = threading.Thread(target=self._run, args=(self.numero,), daemon=True)
+        self._thread = threading.Thread(target=self._run, args=(self.numero, self.simulada), daemon=True)
         self._thread.start()
+
+    def set_hold(self, hold: bool) -> None:
+        """Fase de retención. Solo la usa la placa simulada, igual que el simulador del radar."""
+        self._hold = hold
 
     def desconectar(self) -> None:
         if self.activa:
@@ -153,8 +225,12 @@ class PlacaCMAE:
 
     def _on_frame(self, frame: bytes) -> None:
         lecturas, ppg = decode_frame(frame)
-        now = time.monotonic()
         self.tramas_ok += 1
+        self._entregar(lecturas, ppg)
+
+    def _entregar(self, lecturas: list[Lectura], ppg: list[tuple[float, float]]) -> None:
+        """Deja los datos en memoria para la vista en vivo y pasa cada lectura al oyente."""
+        now = time.monotonic()
         self._ultimo_dato = now
         with self._lock:
             if ppg:
@@ -190,9 +266,12 @@ class PlacaCMAE:
     # Hilo de conexión
     # --------------------------------------------------------
 
-    def _run(self, numero: int) -> None:
+    def _run(self, numero: int, simulada: bool) -> None:
         try:
-            asyncio.run(self._ciclo(nombre_ble(numero)))
+            if simulada:
+                self._simular()
+            else:
+                asyncio.run(self._ciclo(nombre_ble(numero)))
         except _Detenida:
             pass
         except Exception as exc:
@@ -201,6 +280,21 @@ class PlacaCMAE:
             return
         self.estado = Estado.DESCONECTADA
         self.detalle = ""
+
+    def _simular(self) -> None:
+        """Placa simulada: se 'conecta' en 1 s y entrega datos hasta que se presione Desconectar."""
+        self.detalle = "Iniciando placa simulada..."
+        if self._stop.wait(1.0):
+            return
+        simulador = SimuladorPlaca()
+        self._conecto_alguna_vez = True
+        self.estado = Estado.CONECTADA
+        self.detalle = NOMBRE_SIMULADA
+        while not self._stop.wait(self.SIM_PASO_S):
+            lecturas, ppg = simulador.paso(self._hold)
+            if lecturas or ppg:
+                self.tramas_ok += 1
+                self._entregar(lecturas, ppg)
 
     async def _ciclo(self, nombre: str) -> None:
         """Conecta; si la conexión se pierde después de haber conectado, reintenta sin fin."""

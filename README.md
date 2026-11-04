@@ -175,7 +175,8 @@ La placa CMAE se usa como referencia para validar la frecuencia cardíaca del ra
 
 ### Conexión
 
-- **Bluetooth (BLE).** El PC debe tener Bluetooth. La placa se busca por su nombre `CMAE-<número>-S3-N16R8`. En la sección *Placa biomédica CMAE (opcional)* se indica el número de dispositivo y se presiona **Conectar placa** (antes de iniciar la adquisición).
+- **Placa real (Bluetooth).** El PC debe tener Bluetooth. La placa se busca por su nombre `CMAE-<número>-S3-N16R8`. En la sección *Placa biomédica CMAE (opcional)* se indica el número de dispositivo y se presiona **Conectar placa** (antes de iniciar la adquisición).
+- **Placa simulada (sin hardware).** Para ver el dashboard con los dos dispositivos sin tener la placa ni Bluetooth (se puede combinar con el simulador del radar). Genera BPM (~72), SpO2 (~97,6 %) y una onda PPG sintéticos con el mismo ritmo que la placa real; los primeros 3 s no son válidos (como el algoritmo real mientras calcula) y durante la retención el BPM baja hacia 66, igual que en el simulador del radar. Su archivo `PBM_...` se guarda igual que el de la placa real, y en pantalla la sección se titula *Placa biomédica CMAE — simulada*.
 - Al conectar, el dashboard le envía `START`; al desconectar, `STOP`. Los datos llegan en fragmentos CMAE-FRAG que se rearman en tramas `AA 55` con verificación CRC16 (mismo protocolo que el receptor original de la placa).
 - **Si la conexión se corta** (o la placa deja de enviar datos por 10 s), el radar sigue grabando, aparece un aviso y la placa intenta **reconectarse sola** hasta lograrlo o hasta presionar *Desconectar placa*. Mientras está desconectada, su archivo queda con un hueco.
 
@@ -250,6 +251,7 @@ Disponible en Análisis y en la vista en vivo. Al activarlo se superponen la **o
 - Solo se ejecuta una adquisición a la vez (compartida entre pestañas del navegador).
 - No se ha validado aún con el radar real la unidad de `DIST` ni la escala de `BW`.
 - HR y BR son estimaciones internas del sensor; no se dispone de la señal de fase cruda del radar ni de una waveform cardíaca.
-- Placa CMAE: la integración se probó con una placa simulada que reproduce una captura real (`.bin`); falta la prueba con la placa real en un PC con Bluetooth.
+- Placa CMAE: la conexión BLE se probó con una placa falsa que reproduce una captura real (`.bin`); falta la prueba con la placa real en un PC con Bluetooth.
+- Placa simulada: el archivo `PBM_...` no indica que los datos son simulados (igual que el CSV del simulador del radar).
 - Placa CMAE: la sección Análisis todavía no lee los archivos `PBM_...`.
 - Placa CMAE: la placa no entrega frecuencia respiratoria, así que no sirve como referencia para `BR`.

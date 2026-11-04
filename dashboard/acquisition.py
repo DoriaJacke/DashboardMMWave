@@ -208,6 +208,7 @@ class AcquisitionSession:
 
         # Placa CMAE (opcional): sus lecturas van al CSV hermano PBM_...
         self.placa = placa
+        self.placa_simulada = bool(getattr(placa, "simulada", False))
         self.pbm_path = pbm_path_for(self.output_path) if placa is not None else None
         self.pbm_records: list[dict] = []
         self.n_pbm = 0
@@ -282,6 +283,7 @@ class AcquisitionSession:
             self.stop_event.set()
             if self.placa is not None:
                 self.placa.dejar_de_escuchar(self._handle_lectura)
+                self.placa.set_hold(False)
                 with self.lock:
                     if self._pbm_file is not None:
                         self._pbm_file.close()
@@ -413,6 +415,8 @@ class AcquisitionSession:
             self.records.append(_mark_record("PHASE", t, medicion, fase))
         if self.source is not None:
             self.source.set_hold(flag_hold == 1)
+        if self.placa is not None:
+            self.placa.set_hold(flag_hold == 1)
         self.set_status(
             estado=label,
             fase=fase,
@@ -435,6 +439,8 @@ class AcquisitionSession:
             self.ctx = Context(medicion=medicion, fase="END", recording=False)
         if self.source is not None:
             self.source.set_hold(False)
+        if self.placa is not None:
+            self.placa.set_hold(False)
 
     def snapshot(self) -> tuple[list[dict], dict]:
         with self.lock:

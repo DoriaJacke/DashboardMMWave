@@ -56,6 +56,9 @@ PROTO_CONTINUO = "Captura continua "
 FUENTE_SERIAL = "Puerto serial (ESP32)"
 FUENTE_SIMULADOR = "Simulador (sin hardware)"
 
+PLACA_REAL = "Placa real (Bluetooth)"
+PLACA_SIMULADA = "Placa simulada (sin hardware)"
+
 VENTANA_MEDICION = "Medición actual"
 VENTANA_60S = "Últimos 60 s"
 VENTANA_TODO = "Todo"
@@ -299,13 +302,20 @@ def render_config(manager: AcquisitionManager) -> None:
 def render_placa_config() -> None:
     placa = get_placa()
     st.subheader("Placa biomédica CMAE (opcional)")
+    fuente = st.radio(
+        "Fuente de la placa", [PLACA_REAL, PLACA_SIMULADA], key="placa_fuente",
+        horizontal=True, label_visibility="collapsed", disabled=placa.activa,
+    )
     c1, c2 = st.columns([1, 3])
     if placa.activa:
-        c1.markdown(f"**{nombre_ble(placa.numero)}**")
+        c1.markdown(f"**{placa.nombre.capitalize()}**")
         c2.button("Desconectar placa", on_click=placa.desconectar, key="placa_desconectar")
+    elif fuente == PLACA_SIMULADA:
+        c1.caption("Genera BPM, SpO2 y onda PPG sintéticos para ver el dashboard sin la placa.")
+        c2.button("Conectar placa", on_click=placa.conectar, args=(0, True), key="placa_conectar")
     else:
         numero = int(c1.number_input("Número de dispositivo", min_value=1, max_value=99, value=1, step=1, key="placa_numero"))
-        c2.button("Conectar placa", on_click=placa.conectar, args=(numero,), key="placa_conectar")
+        c2.button("Conectar placa", on_click=placa.conectar, args=(numero, False), key="placa_conectar")
         c2.caption(f"Se buscará {nombre_ble(numero)} por Bluetooth.")
     placa_estado_panel()
 
@@ -461,9 +471,13 @@ def shared_time_range(long, pbm) -> tuple[float, float] | None:
     return (lo, hi) if hi > lo else None
 
 
+def titulo_placa(session) -> str:
+    return "Placa biomédica CMAE — simulada" if session.placa_simulada else "Placa biomédica CMAE"
+
+
 def render_pbm_live(session, pbm, phases_df, x_mode: str, show_phases: bool, x_range) -> None:
     placa = session.placa
-    st.subheader("Placa biomédica CMAE")
+    st.subheader(titulo_placa(session))
     if placa.estado == Estado.RECONECTANDO:
         st.warning(
             "Se perdió la conexión con la placa y se está reconectando sola. "
@@ -527,7 +541,7 @@ def render_last_session(manager: AcquisitionManager) -> None:
     render_analysis(records_to_long(records), fmt, key="last")
 
     if session.placa is not None:
-        st.subheader("Placa biomédica CMAE")
+        st.subheader(titulo_placa(session))
         st.markdown(f"Archivo: `{session.pbm_path}` · lecturas guardadas: **{session.n_pbm}**")
         fig = figure_pbm(
             pbm_records_to_frame(session.snapshot_pbm()), records_to_long(records),
@@ -593,7 +607,7 @@ def placa_sidebar() -> None:
     """Estado de la placa en la barra lateral; se refresca solo, también durante la adquisición."""
     placa = get_placa()
     if placa.estado == Estado.CONECTADA:
-        st.caption(f"● Placa CMAE conectada ({placa.detalle})")
+        st.caption("● Placa CMAE simulada conectada" if placa.simulada else f"● Placa CMAE conectada ({placa.nombre})")
     elif placa.estado == Estado.RECONECTANDO:
         st.caption("● Placa CMAE reconectando")
 
