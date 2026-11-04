@@ -41,7 +41,7 @@ from .acquisition import (
     SimulatedSource,
     list_serial_ports_info,
 )
-from .config import normalize, resolve_filename, validate_start
+from .config import ConfigStore, normalize, resolve_filename, validate_start
 from .data_io import phase_summary, records_to_long
 from .plots import SavgolConfig, export_zip
 
@@ -151,6 +151,7 @@ def create_app(data_dir: Optional[Path] = None) -> FastAPI:
     data_dir = Path(data_dir or os.environ.get("MMWAVE_DATA_DIR") or DEFAULT_DATA_DIR)
     app = FastAPI(title="Dashboard mmWave MR60BHA1")
     manager = AcquisitionManager()
+    config_store = ConfigStore(data_dir / ".dashboard_config.json")
     session_ids = itertools.count(1)
     export_lock = threading.Lock()
     export_state: dict = {"running": False, "done": 0, "total": 0, "file": None}
@@ -190,6 +191,19 @@ def create_app(data_dir: Optional[Path] = None) -> FastAPI:
         ]}
 
     # --------------------------------------------------------
+    # Configuración persistente
+    # --------------------------------------------------------
+
+    @app.get("/api/config")
+    def get_config():
+        return config_store.load()
+
+    @app.put("/api/config")
+    def put_config(payload: dict = Body(...)):
+        # Acepta cambios parciales, por ejemplo {"zone": {...}} desde el medidor de distancia.
+        return config_store.update(payload)
+
+    # --------------------------------------------------------
     # Adquisición
     # --------------------------------------------------------
 
@@ -218,7 +232,9 @@ def create_app(data_dir: Optional[Path] = None) -> FastAPI:
         if manager.busy:
             raise HTTPException(409, {"field": None, "msg": "Ya hay una adquisición en curso."})
 
-        cfg = normalize(raw)
+        # Se guarda la configuración usada (sin el nombre de archivo) para la siguiente.
+        # La zona de distancia no viene en la petición: se conserva la guardada.
+        cfg = config_store.update({k: v for k, v in raw.items() if k != "zone"})
         if cfg["proto"] == "seq":
             protocol = RetentionProtocol(
                 n_mediciones=int(cfg["n"]), t_normal=float(cfg["tn"]), t_hold=float(cfg["th"]),

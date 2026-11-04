@@ -8,7 +8,10 @@
 from __future__ import annotations
 
 import copy
+import json
 import math
+import threading
+from pathlib import Path
 from typing import Any, Optional
 
 # Campos del protocolo de secuencia: (mínimo, máximo). Son los mismos de la interfaz.
@@ -119,6 +122,40 @@ def validate_start(raw: Any) -> Optional[tuple[str, str]]:
         if number is None or not low <= number <= high:
             return "range", MSG_RANGE
     return None
+
+
+class ConfigStore:
+    """
+    Última configuración usada, guardada en un JSON (datos/.dashboard_config.json).
+    Así la siguiente adquisición no vuelve en silencio a los valores por defecto.
+    No guarda el nombre de archivo: cada adquisición genera uno nuevo con su hora.
+    """
+
+    def __init__(self, path: Path):
+        self.path = Path(path)
+        self._lock = threading.Lock()
+
+    def load(self) -> dict:
+        with self._lock:
+            try:
+                raw = json.loads(self.path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                raw = None
+            return normalize(raw)
+
+    def update(self, raw: Any) -> dict:
+        """Mezcla los cambios sobre lo guardado (acepta cambios parciales) y guarda."""
+        with self._lock:
+            try:
+                current = normalize(json.loads(self.path.read_text(encoding="utf-8")))
+            except (OSError, ValueError):
+                current = normalize(None)
+            cfg = normalize(raw, base=current)
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(self.path)
+            return cfg
 
 
 INVALID_CHARS = set('<>:"/\\|?*')
