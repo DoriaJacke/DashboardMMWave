@@ -132,6 +132,7 @@ def status_json(session: AcquisitionSession) -> dict:
         "latest": latest,
         "n_lines": session.n_lines,
         "n_saved": session.n_saved,
+        "n_markers": len(session.markers),
     }
 
 
@@ -139,7 +140,7 @@ def status_signature(session: AcquisitionSession) -> tuple:
     """Lo que, si cambia, se envía de inmediato sin esperar al envío periódico."""
     st = session.status
     return (st.fase, st.medicion, st.estado, st.cuenta, st.esperando_usuario,
-            st.terminado, st.error, session.ctx.recording)
+            st.terminado, st.error, session.ctx.recording, len(session.markers))
 
 
 # ============================================================
@@ -269,6 +270,16 @@ def create_app(data_dir: Optional[Path] = None) -> FastAPI:
             raise HTTPException(409, "La adquisición no está esperando confirmación.")
         session.confirm_ready()
         return {"ok": True}
+
+    @app.post("/api/acquisition/marker")
+    def marker():
+        session = require_session()
+        added = session.add_marker() if session.running else None
+        if added is None:
+            raise HTTPException(409, "Las marcas solo se agregan durante las fases que se graban.")
+        medicion = added["medicion"] if isinstance(added["medicion"], int) else None
+        return {"label": added["label"], "t": round(added["t"], 3),
+                "medicion": medicion, "fase": added["fase"]}
 
     @app.get("/api/acquisition/last")
     def last():

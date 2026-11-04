@@ -192,6 +192,8 @@ class AcquisitionSession:
         self.ctx = Context()
         self.status = Status(total=protocol.n_mediciones)
         self.records: list[dict] = []
+        # Marcas del operador ({label, t, medicion, fase}); la numeración es por sesión.
+        self.markers: list[dict] = []
         self.latest: dict = {"HR": None, "BR": None, "DIST": None, "EVENT": None}
         self.latest_t: dict = {}
         # (t, distancia) de todas las líneas DIST, también las de fases que no se graban.
@@ -386,6 +388,28 @@ class AcquisitionSession:
         if self.source is not None:
             self.source.set_hold(False)
 
+    def add_marker(self) -> Optional[dict]:
+        """
+        Marca un punto de interés en el instante actual y lo escribe en el CSV.
+        Solo se acepta durante las fases que se graban; si no, devuelve None.
+        """
+        t = time.monotonic() - self.t0
+        with self.lock:
+            ctx = self.ctx
+            if (not ctx.recording or self.stop_event.is_set()
+                    or self._file is None or self._file.closed):
+                return None
+            label = f"M{len(self.markers) + 1}"
+            row = self.protocol.marker_row(label, ctx, self)
+            if row is not None:
+                self._write(row)
+            marker = {"label": label, "t": t, "medicion": ctx.medicion, "fase": ctx.fase}
+            self.markers.append(marker)
+            record = _mark_record("MARK", t, ctx.medicion, ctx.fase)
+            record["evento"] = label
+            self.records.append(record)
+        return marker
+
     def snapshot(self) -> tuple[list[dict], dict]:
         with self.lock:
             return list(self.records), dict(self.latest)
@@ -417,7 +441,7 @@ def parse_record(tipo: str, parts: list[str], t: float, medicion, fase) -> Optio
         if len(parts) < 2:
             return None
         record["valor_1"] = to_float(parts[1])
-    elif tipo == "EVENT":
+    elif tipo in ("EVENT", "MARK"):
         if len(parts) < 2:
             return None
         record["evento"] = parts[1]
@@ -472,6 +496,10 @@ class RetentionProtocol:
     def end_row(self, medicion) -> list:
         return [now_iso(), medicion, "END", "FIN", 0, "END", "", "", "", "", ""]
 
+    def marker_row(self, label: str, ctx: Context, session) -> list:
+        # Marca del operador: tipo MARK y la etiqueta (M1, M2…) en valor_1.
+        return self._base(ctx) + ["MARK", label, "", "", "", ""]
+
     def run(self, s: AcquisitionSession) -> None:
         for m in range(1, self.n_mediciones + 1):
 
@@ -521,10 +549,17 @@ class ContinuousProtocol:
     n_mediciones: int = 0
     nombre: str = "Captura continua"
     columns: list[str] = field(default_factory=lambda: [
-        "timestamp", "datetime", "HR", "BR", "distance", "movement", "raw",
+        "timestamp", "datetime", "HR", "BR", "distance", "movement", "raw", "marker",
     ])
 
     def format_line(self, line, parts, ctx, session) -> list:
+        return self._row(line, "", session)
+
+    def marker_row(self, label: str, ctx: Context, session) -> list:
+        # Marca del operador: raw = "MARK,M1" y la etiqueta en la columna marker.
+        return self._row(f"MARK,{label}", label, session)
+
+    def _row(self, raw: str, marker: str, session) -> list:
         latest = session.latest
         return [
             f"{time.monotonic() - session.t0:.3f}",
@@ -533,7 +568,8 @@ class ContinuousProtocol:
             latest["BR"],
             latest["DIST"],
             latest["EVENT"],
-            line,
+            raw,
+            marker,
         ]
 
     def phase_row(self, ctx: Context) -> None:

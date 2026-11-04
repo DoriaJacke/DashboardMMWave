@@ -43,7 +43,8 @@ def sequence_to_long(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     ts = pd.to_datetime(out["timestamp"], errors="coerce")
     out["t"] = (ts - ts.min()).dt.total_seconds()
-    out["evento"] = np.where(out["tipo"] == "EVENT", out["valor_1"].astype(str), None)
+    # EVENT trae el estado y MARK la etiqueta de la marca (M1, M2…) en valor_1.
+    out["evento"] = np.where(out["tipo"].isin(["EVENT", "MARK"]), out["valor_1"].astype(str), None)
     for col in WAVE_COLS:
         out[col] = pd.to_numeric(out[col], errors="coerce")
     out["medicion"] = pd.to_numeric(out["medicion"], errors="coerce").astype("Int64")
@@ -51,7 +52,11 @@ def sequence_to_long(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def continuous_to_long(df: pd.DataFrame) -> pd.DataFrame:
-    """El formato continuo guarda la línea original en 'raw'; se re-interpreta."""
+    """
+    El formato continuo guarda la línea original en 'raw'; se re-interpreta.
+    Las marcas del operador vienen como raw = "MARK,M1" (columna 'marker',
+    opcional para que los CSV antiguos sigan funcionando).
+    """
     t = pd.to_numeric(df["timestamp"], errors="coerce").to_numpy()
     records = []
     for ti, raw in zip(t, df["raw"].astype(str)):
