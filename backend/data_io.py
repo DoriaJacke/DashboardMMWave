@@ -13,7 +13,7 @@ import io
 import numpy as np
 import pandas as pd
 
-from acquisition import WAVE_COLS, parse_record
+from .acquisition import WAVE_COLS, parse_record
 
 FORMATO_SECUENCIA = "secuencia"
 FORMATO_CONTINUO = "continuo"
