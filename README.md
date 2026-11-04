@@ -29,6 +29,7 @@ DashboardMMWave/
 ├── MedirHRBRVF/
 │   └── MedirHRBRVF.ino        Firmware del ESP32
 ├── datos/                     CSV generados por el dashboard (se crea automáticamente)
+├── Dockerfile                 Imagen con la interfaz compilada y el backend
 └── requirements.txt
 ```
 
@@ -102,6 +103,22 @@ cd frontend && npm run dev
 ```
 
 La interfaz queda en http://localhost:5173 y redirige la API y el WebSocket al puerto 8000.
+
+### Con Docker
+
+> **En Windows, el contenedor no ve los puertos COM.** Sirve para probar el dashboard con el **Simulador**, pero no para medir con el radar: para eso hay que ejecutarlo sin Docker, como se indica arriba. Lo mismo ocurrirá con Bluetooth si se suma la placa CMAE.
+
+La imagen compila la interfaz por su cuenta, así que solo hace falta Docker. Desde la raíz del repositorio, en PowerShell:
+
+```
+docker build -t dashboard-mmwave .
+docker run --rm -p 8000:8000 -v "${PWD}/datos:/app/datos" dashboard-mmwave
+```
+
+El dashboard se abre en http://localhost:8000.
+
+- **No omitas `-v`:** es lo que guarda los CSV en la carpeta `datos/` del PC. Sin esa opción, los archivos se pierden al detener el contenedor.
+- **Zona horaria:** los CSV guardan la hora local del contenedor. La imagen usa `America/Santiago`; para otra zona, agrega `-e TZ=<zona>` a `docker run`. Comprueba que coincida con la del PC, porque la sincronización con otros equipos depende de esa hora.
 
 ---
 

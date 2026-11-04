@@ -1,0 +1,19 @@
+# Los datos de las mediciones nunca van dentro de la imagen.
+datos/
+
+.git/
+.gitattributes
+.gitignore
+.dockerignore
+Dockerfile
+*.md
+
+# Se generan dentro de la imagen.
+frontend/node_modules/
+frontend/dist/
+**/__pycache__/
+*.pyc
+
+# No se usan para ejecutar el dashboard.
+CodigosBaseMirko/
+MedirHRBRVF/
