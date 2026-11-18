@@ -1,6 +1,7 @@
 // Conexión en vivo con el backend (WebSocket /ws/live).
-// Al conectarse llega el historial completo ("snapshot") y después, ~1 vez por
-// segundo o apenas cambia la fase, el estado y solo los datos nuevos ("update").
+// Al conectarse llega el historial completo ("snapshot") y después, apenas
+// llegan datos nuevos o cambia la fase (y al menos 1 vez por segundo), el estado
+// y solo los datos nuevos ("update").
 // Si la conexión se corta, se reconecta sola y vuelve a pedir el historial.
 
 import { useEffect, useRef, useState } from "react";

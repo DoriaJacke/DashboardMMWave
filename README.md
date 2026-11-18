@@ -59,12 +59,26 @@ Todos los valores los calcula internamente el MR60BHA1; el ESP32 solo los reenv�
 
 | Parámetro | Unidad | Observaciones |
 |---|---|---|
-| `HR` | latidos por minuto (BPM) | Valor estimado por el sensor, aprox. uno por segundo. Un 0 significa que no hay estimación |
-| `BR` | respiraciones por minuto | Valor estimado por el sensor, aprox. uno por segundo |
-| `DIST` | centímetros (según protocolo Seeed, **por confirmar**) | El medidor de distancia asume cm; la unidad se puede cambiar en el dashboard |
+| `HR` | latidos por minuto (BPM) | Valor estimado por el sensor, uno cada 3 s. Un 0 significa que no hay estimación |
+| `BR` | respiraciones por minuto | Valor estimado por el sensor, uno cada 3 s |
+| `DIST` | metros, resolución de 1 cm | Uno por segundo. Confirmado con datos reales (por ejemplo, 0,59 m) |
 | `BW` | sin unidad física (amplitud relativa) | Sirve para forma, ritmo y amplitud relativa de la respiración; según el protocolo Seeed serían valores 0–255 centrados cerca de 128 (**por confirmar**) |
 | `EVENT` | texto | Estado categórico |
-| `timestamp` | hora del PC al recibir la línea | No es la hora de medición del sensor; puede haber un pequeño desfase por el puerto serial y el `delay(200)` del firmware |
+| `timestamp` | hora del PC al recibir la línea | No es la hora de medición del sensor; ver *Retraso de los datos* |
+
+### Retraso de los datos
+
+Medido con la placa real (COM3, 11-11-2026), los datos llegan al PC con este ritmo:
+
+| Línea | Cada cuánto llega | Retraso que introduce |
+|---|---|---|
+| `HR`, `BR` | 3,0 s (exacto) | Hasta 3 s entre que cambia el valor y se ve, más la ventana de cálculo interna del radar |
+| `BW` | 1,0 s, con 5 muestras | La onda llega en bloques de 1 s: la muestra más antigua de cada bloque ya tiene ~1 s |
+| `DIST`, `EVENT` | 1,0 s | Hasta 1 s |
+
+El retraso de ~3 s que se nota en HR y BR viene del MR60BHA1: entrega un valor nuevo cada 3 s y lo calcula sobre los segundos anteriores. No se puede reducir desde el dashboard. El `timestamp` del CSV es la hora de llegada al PC, así que el valor de HR o BR de una fila describe lo que pasó unos segundos antes. Tenlo en cuenta al comparar con las marcas o con el cambio de fase (por ejemplo, el inicio de la retención).
+
+El dashboard envía cada dato a la página apenas llega (se revisa cada 0,1 s), así que no agrega un retraso apreciable.
 
 ---
 
@@ -169,7 +183,7 @@ Mientras se adquiere:
 - Últimos valores de HR, BR y evento, con la antigüedad de cada dato (en gris si tiene más de 3 s, o 12 s para el evento), y líneas recibidas / guardadas.
 - **Medidor de distancia:** indicador tipo velocímetro con la distancia actual de la persona al radar y tres zonas de color: *muy cerca* (naranjo), *distancia adecuada* (verde) y *muy lejos* (rojo). Debajo, la distancia de los últimos 60 s con la zona adecuada sombreada.
   - Funciona también durante la espera de posicionamiento (antes de presionar "Estoy en posición"), para ubicar a la persona antes de medir.
-  - La zona adecuada (40–150 cm por defecto), la escala del medidor (300 cm) y la unidad se configuran con el botón que muestra la zona actual.
+  - La zona adecuada (0,40–1,50 m por defecto) y la escala del medidor (3 m) se configuran con el botón que muestra la zona actual. Una configuración guardada en cm se convierte sola a metros.
   - Si no llegan datos `DIST` por más de 5 s, el medidor indica *Sin datos recientes*.
 - **Gráficos** de waveform BW, HR y BR, con el eje X compartido. El botón de opciones cambia el eje X (*Tiempo* o *Índice de muestra*), la ventana (*Medición actual*, *Últimos 60 s*, *Todo*), el sombreado de fases y el filtro Savitzky-Golay. En *Medición actual* las fases que faltan se ven atenuadas y una línea punteada marca el instante actual.
 - **Zoom:** arrastrar sobre un gráfico acerca los tres; doble clic restablece. Los botones ← + − → hacen lo mismo con el teclado o el mouse.
@@ -203,7 +217,15 @@ Disponible en la vista en vivo y en el resultado. Al activarlo se superponen la 
 
 ## Sección Análisis
 
-**En construcción.** Se diseña en la siguiente etapa; por ahora solo muestra el indicador de la adquisición en curso. Abrir archivos guardados de `datos/` o subir un CSV todavía no está disponible en esta interfaz. `backend/data_io.py` ya lee los dos formatos, incluidos los CSV antiguos.
+Sirve para revisar mediciones ya guardadas, incluidas las antiguas, sin hacer una adquisición nueva.
+
+- **Archivos:** lista los CSV de `datos/` del más reciente al más antiguo, con fecha y tamaño. Al hacer clic en uno se abre. **Actualizar** vuelve a leer la carpeta. **Subir CSV desde el equipo** abre un archivo de otra carpeta; no se copia a `datos/`.
+- **Formato:** se detecta solo. Se leen los CSV de secuencia (`MEDICION20SEQRES.py`) y de captura continua (`tomadatosSEPT.py`), también los antiguos sin columna `marker`.
+- **Archivo abierto:** nombre, origen, formato, filas, mediciones (y cuántas están completas), duración y hora de inicio.
+- **Gráficos y resumen por fase:** los mismos del Resultado de una adquisición: selector de medición, eje en muestras o en segundos, sombreado de fases, marcas y filtro Savitzky-Golay. El resumen por fase está disponible solo para archivos de secuencia.
+- **Exportar imágenes:** genera un PNG por medición del archivo abierto y lo descarga como `graficos_<archivo>.zip`.
+
+Si el archivo elegido es el que se está grabando, se muestra lo guardado hasta el momento de abrirlo. Mientras hay una adquisición en curso, un indicador arriba muestra su estado y permite volver a ella.
 
 ---
 
@@ -246,6 +268,9 @@ La secuencia conserva el formato de los scripts originales: `HRBRWF.py` filtra p
 | GET | `/api/ports` | Puertos seriales detectados |
 | GET / PUT | `/api/config` | Configuración guardada (PUT acepta cambios parciales) |
 | GET | `/api/files` | CSV de `datos/`, del más reciente al más antiguo |
+| GET | `/api/files/{nombre}` | Abre un CSV de `datos/` para Análisis: registros, distancia, resumen por fase y una `key` para exportar |
+| POST | `/api/analysis/upload?name=archivo.csv` | Igual, con el CSV en el cuerpo de la petición (hasta 200 MB) |
+| POST | `/api/analysis/export?key=…&dpi=300` | Genera el ZIP de imágenes del archivo abierto en Análisis (mismos parámetros que `/api/export`) |
 | GET | `/api/acquisition` | Estado de la adquisición actual |
 | POST | `/api/acquisition` | Inicia una adquisición: `{config, filename}`. 400 si hay un campo inválido; 409 si ya hay una en curso |
 | POST | `/api/acquisition/stop` | Detiene la adquisición |
@@ -254,7 +279,7 @@ La secuencia conserva el formato de los scripts originales: `HRBRWF.py` filtra p
 | GET | `/api/acquisition/last` | Resultado de la última adquisición terminada |
 | GET | `/api/acquisition/summary` | Resumen por fase |
 | POST | `/api/export?dpi=300&sg_window=0.8&sg_order=2` | Genera y devuelve `graficos_mediciones.zip` |
-| WS | `/ws/live` | Al conectarse envía el historial completo; después, una vez por segundo o apenas cambia la fase, el estado y solo los datos nuevos |
+| WS | `/ws/live` | Al conectarse envía el historial completo; después, apenas llegan datos nuevos o cambia la fase (y al menos una vez por segundo), el estado y solo los datos nuevos |
 
 La variable de entorno `MMWAVE_DATA_DIR` cambia la carpeta de datos (por defecto `datos/`), lo que sirve para hacer pruebas sin tocar los datos reales.
 

@@ -39,8 +39,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "tp": 3,
     "esperar": True,
     "duracion": 0,
-    # Zona adecuada del medidor de distancia.
-    "zone": {"min": 40, "max": 150, "scale": 300, "unit": "cm"},
+    # Zona adecuada del medidor de distancia, en metros (el MR60BHA1 entrega DIST en m).
+    "zone": {"min": 0.4, "max": 1.5, "scale": 3, "unit": "m"},
 }
 
 MSG_PORT = "Selecciona un puerto serial."
@@ -85,12 +85,12 @@ def normalize(raw: Any, base: Optional[dict] = None) -> dict:
             cfg[key] = int(number) if key in INT_FIELDS else _compact(number)
     zone = raw.get("zone")
     if isinstance(zone, dict):
+        # Configuraciones guardadas antes de confirmar la unidad estaban en cm.
+        factor = 0.01 if zone.get("unit") == "cm" else 1
         for key in ("min", "max", "scale"):
             number = to_number(zone.get(key))
             if number is not None and number >= 0:
-                cfg["zone"][key] = _compact(number)
-        if isinstance(zone.get("unit"), str):
-            cfg["zone"]["unit"] = zone["unit"].strip()[:12]
+                cfg["zone"][key] = _compact(round(number * factor, 3))
     return cfg
 
 

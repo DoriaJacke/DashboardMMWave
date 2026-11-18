@@ -10,12 +10,13 @@ export class ApiError extends Error {
 }
 
 async function request(method, url, body) {
+  const raw = body instanceof Blob;
   let res;
   try {
     res = await fetch(url, {
       method,
-      headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
-      body: body !== undefined ? JSON.stringify(body) : undefined,
+      headers: body !== undefined ? { "Content-Type": raw ? "text/csv" : "application/json" } : undefined,
+      body: body !== undefined ? (raw ? body : JSON.stringify(body)) : undefined,
     });
   } catch {
     throw new ApiError("No hay conexión con el backend. Revisa que esté funcionando.", 0, null);
@@ -44,13 +45,18 @@ export const api = {
   confirm: () => json(request("POST", "/api/acquisition/confirm")),
   marker: () => json(request("POST", "/api/acquisition/marker")),
   summary: () => json(request("GET", "/api/acquisition/summary")),
-  exportZip: async ({ dpi, sgWindow, sgOrder }) => {
+  files: () => json(request("GET", "/api/files")),
+  openFile: (name) => json(request("GET", `/api/files/${encodeURIComponent(name)}`)),
+  uploadFile: (file) => json(request("POST", `/api/analysis/upload?${new URLSearchParams({ name: file.name })}`, file)),
+  /** Sin `key` exporta la última adquisición; con `key`, el archivo abierto en Análisis. */
+  exportZip: async ({ dpi, sgWindow, sgOrder, key }) => {
     const q = new URLSearchParams({ dpi: String(dpi) });
+    if (key) q.set("key", key);
     if (sgWindow != null) {
       q.set("sg_window", String(sgWindow));
       q.set("sg_order", String(sgOrder));
     }
-    const res = await request("POST", `/api/export?${q}`);
+    const res = await request("POST", `${key ? "/api/analysis/export" : "/api/export"}?${q}`);
     const n = Number(res.headers.get("X-Image-Count")) || null;
     return { blob: await res.blob(), n };
   },

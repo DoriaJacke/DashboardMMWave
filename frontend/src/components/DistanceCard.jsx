@@ -9,6 +9,7 @@ import { fmt } from "../lib/format";
 import { AMBER, GREEN, GREY, RED } from "../lib/phases";
 
 const STALE_S = 5;
+const fmtM = (v) => fmt(v, Number.isInteger(v) ? 0 : v * 10 === Math.round(v * 10) ? 1 : 2);
 const CX = 160;
 const CY = 152;
 const R = 118;
@@ -22,7 +23,7 @@ export default function DistanceCard({ status, receivedAt, dist, zone, onZone })
 
   const zmin = +zone.min || 0;
   const zmax = Math.max(+zone.max || 0, zmin);
-  const scale = Math.max(+zone.scale || 10, zmax);
+  const scale = Math.max(+zone.scale || 3, zmax);
   const unit = zone.unit || "";
 
   const last = status.latest?.DIST || null;
@@ -67,10 +68,9 @@ export default function DistanceCard({ status, receivedAt, dist, zone, onZone })
 
   const ageText = !last ? "" : stale ? `Último dato hace ${fmt(age)} s` : `Actualizado hace ${fmt(Math.max(0, age ?? 0))} s`;
   const fields = [
-    ["Mínimo", "min", "number"],
-    ["Máximo", "max", "number"],
-    ["Escala del medidor", "scale", "number"],
-    ["Unidad", "unit", "text"],
+    ["Mínimo", "min"],
+    ["Máximo", "max"],
+    ["Escala del medidor", "scale"],
   ];
 
   return (
@@ -79,13 +79,13 @@ export default function DistanceCard({ status, receivedAt, dist, zone, onZone })
         <h2 style={{ fontSize: 18, margin: 0, flex: 1 }}>Distancia al radar</h2>
         <button className="btn btn-link btn-sm text-decoration-none d-inline-flex align-items-center gap-2" onClick={() => setOpen((v) => !v)} aria-expanded={open} style={{ padding: "2px 4px" }}>
           <Settings2 size={15} strokeWidth={1.5} />
-          {fmt(zmin)}–{fmt(zmax)} {unit}
+          {fmt(zmin, 2)}–{fmt(zmax, 2)} {unit}
         </button>
       </div>
       <div style={{ flex: "none", display: "grid", gridTemplateColumns: "clamp(110px,18vh,180px) minmax(0,1fr)", gap: 12, alignItems: "center" }}>
         <div style={{ position: "relative", width: "100%" }}>
           <svg viewBox="0 0 320 178" style={{ width: "100%", display: "block" }} role="img"
-            aria-label={`Distancia: ${last ? `${fmt(last.v, 1)} ${unit}` : "sin datos"}. ${statusText}.`}>
+            aria-label={`Distancia: ${last ? `${fmt(last.v, 2)} ${unit}` : "sin datos"}. ${statusText}.`}>
             {zones.map((z, i) => (
               <path key={i} d={z.d} fill="none" stroke={z.stroke} strokeWidth="22" style={{ transition: "stroke .4s" }} />
             ))}
@@ -98,14 +98,14 @@ export default function DistanceCard({ status, receivedAt, dist, zone, onZone })
           </svg>
           {ticks.map((tk) => (
             <div key={tk.v} style={{ position: "absolute", left: tk.left, top: tk.top, transform: tk.tf, fontSize: 10, color: "var(--color-neutral-700)", fontVariantNumeric: "tabular-nums" }}>
-              {fmt(tk.v)}
+              {fmtM(tk.v)}
             </div>
           ))}
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
           <div style={{ display: "flex", alignItems: "baseline", gap: 5, color, transition: "color .4s" }}>
             <span style={{ fontFamily: "var(--font-heading)", fontWeight: 600, fontSize: "clamp(26px,4.6vh,40px)", lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>
-              {last ? fmt(last.v, 1) : "—"}
+              {last ? fmt(last.v, 2) : "—"}
             </span>
             <span style={{ fontSize: 15 }}>{last ? unit : ""}</span>
           </div>
@@ -126,7 +126,7 @@ export default function DistanceCard({ status, receivedAt, dist, zone, onZone })
         </svg>
         {tickVals.map((v) => (
           <div key={v} style={{ position: "absolute", right: `${(100 - (38 / 560) * 100).toFixed(2)}%`, top: `${((ys(v) / 190) * 100).toFixed(2)}%`, transform: "translateY(-50%)", fontSize: 10, color: "var(--color-neutral-700)", paddingRight: 4 }}>
-            {fmt(v)}
+            {fmtM(v)}
           </div>
         ))}
         {[-60, -45, -30, -15, 0].map((v) => (
@@ -142,14 +142,14 @@ export default function DistanceCard({ status, receivedAt, dist, zone, onZone })
       </div>
       {open && (
         <div className="enter-down" style={{ position: "absolute", top: 44, left: 10, right: 10, zIndex: 5, background: "#fff", borderRadius: "var(--bs-border-radius)", boxShadow: "var(--shadow-lg)", border: "1px solid var(--bs-border-color)", padding: 12, display: "grid", gridTemplateColumns: "repeat(2,minmax(0,1fr))", gap: 10 }}>
-          {fields.map(([label, key, type]) => (
+          {fields.map(([label, key]) => (
             <div className="field" key={key}>
-              <label htmlFor={`zone-${key}`}>{key === "unit" ? label : `${label} (${unit})`}</label>
-              <input id={`zone-${key}`} className="form-control form-control-sm" type={type} value={zone[key]} onChange={(e) => onZone({ [key]: e.target.value })} />
+              <label htmlFor={`zone-${key}`}>{`${label} (${unit})`}</label>
+              <input id={`zone-${key}`} className="form-control form-control-sm" type="number" min="0" step="0.05" value={zone[key]} onChange={(e) => onZone({ [key]: e.target.value })} />
             </div>
           ))}
           <div style={{ gridColumn: "1 / -1", display: "flex", alignItems: "center", gap: 10 }}>
-            <span style={{ flex: 1, fontSize: 12, color: "var(--color-neutral-700)" }}>Según el protocolo de Seeed el MR60BHA1 entrega cm. La unidad real está por confirmar.</span>
+            <span style={{ flex: 1, fontSize: 12, color: "var(--color-neutral-700)" }}>El MR60BHA1 entrega la distancia en metros, con resolución de 1 cm.</span>
             <button className="btn btn-primary btn-sm" onClick={() => setOpen(false)}>Listo</button>
           </div>
         </div>

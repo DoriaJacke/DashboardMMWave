@@ -1,9 +1,10 @@
 // Columna izquierda del Resultado: estado final, siguiente adquisición
 // (configuración conservada) y exportación de imágenes PNG.
 
-import { Download, Play } from "lucide-react";
-import { fmt, mmss, pad } from "../lib/format";
+import { Play } from "lucide-react";
+import { fmt, mmss } from "../lib/format";
 import { AMBER, GREEN, RED } from "../lib/phases";
+import ExportCard from "./ExportCard";
 
 const KINDS = {
   ok: { title: "ADQUISICIÓN COMPLETADA", color: GREEN, tint: "oklch(0.97 0.02 152)", ink: "oklch(0.36 0.08 152)" },
@@ -19,17 +20,6 @@ const dt = { fontWeight: 400, color: "var(--color-neutral-700)" };
 export default function ResultPanel({ session, status, nEnd, cfgSummary, onStart, onEdit, startError, starting, exp, onDpi, onGenerate, onDownload, exportProgress }) {
   const k = KINDS[endKind(status)];
   const seq = session.proto === "seq";
-  const nImages = exportProgress?.total || (seq ? Math.max(1, nEnd) : 1);
-  const running = exp.state === "running";
-  const done = exportProgress?.done ?? 0;
-  const total = exportProgress?.total || nImages;
-  const current = exportProgress?.file || `medicion_${pad(Math.min(total, done + 1))}.png`;
-  const expText = running
-    ? `Generando imágenes… ${done} de ${total} (${current})`
-    : exp.state === "done"
-      ? `graficos_mediciones.zip · ${exp.n} ${exp.n === 1 ? "imagen" : "imágenes"} a ${exp.dpi} DPI`
-      : "";
-  const pct = running && total ? Math.round((done / total) * 100) : 0;
 
   return (
     <>
@@ -78,38 +68,8 @@ export default function ResultPanel({ session, status, nEnd, cfgSummary, onStart
         )}
       </section>
 
-      <section className="card border-0" style={{ boxShadow: "var(--shadow-sm)", background: "#fff", flex: 1, minHeight: 0, padding: 16, gap: 10, overflow: "hidden" }}>
-        <h3 style={{ fontSize: 20, margin: 0 }}>Exportar imágenes</h3>
-        <p style={{ fontSize: 13, margin: 0, color: "var(--color-neutral-800)" }}>
-          Genera una imagen PNG por medición con el mismo estilo de HRBRWF.py (medicion_XX.png). Si el filtro Savitzky-Golay está activo, la onda filtrada se superpone también en las imágenes.
-        </p>
-        <div style={{ display: "flex", alignItems: "end", gap: 14, flexWrap: "wrap" }}>
-          <div className="field" style={{ width: 120 }}>
-            <label htmlFor="exp-dpi">DPI (72–600)</label>
-            <input id="exp-dpi" className="form-control" type="number" min="72" max="600" step="50" value={exp.dpi} onChange={(e) => onDpi(e.target.value)} />
-          </div>
-          <button className="btn btn-outline-secondary d-inline-flex align-items-center justify-content-center gap-2" disabled={running} onClick={onGenerate} style={{ minHeight: 36 }}>
-            Generar imágenes
-          </button>
-          {running && (
-            <div style={{ display: "flex", flexDirection: "column", gap: 5, minWidth: 320 }}>
-              <span style={{ fontSize: 13 }}>{expText}</span>
-              <div className="progress" style={{ height: 8 }} role="progressbar" aria-label="Avance de la exportación" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>
-                <div className="progress-bar progress-bar-striped progress-bar-animated" style={{ width: `${Math.max(pct, 4)}%`, backgroundColor: "var(--color-accent)", transition: "width .18s linear" }} />
-              </div>
-            </div>
-          )}
-          {exp.state === "done" && (
-            <>
-              <button className="btn btn-primary d-inline-flex align-items-center gap-2" onClick={onDownload} style={{ minHeight: 36 }}>
-                <Download size={16} strokeWidth={1.5} />
-                Descargar ZIP
-              </button>
-              <span style={{ fontSize: 13, color: "var(--color-neutral-700)" }}>{expText}</span>
-            </>
-          )}
-        </div>
-      </section>
+      <ExportCard exp={exp} nImages={seq ? Math.max(1, nEnd) : 1} onDpi={onDpi} onGenerate={onGenerate} onDownload={onDownload}
+        exportProgress={exportProgress} style={{ flex: 1, minHeight: 0 }} />
     </>
   );
 }

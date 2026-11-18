@@ -1,5 +1,5 @@
 // Dashboard mmWave MR60BHA1: sección Adquisición (Configuración → En vivo →
-// Resultado) e indicador global. La sección Análisis es un esqueleto por ahora.
+// Resultado), sección Análisis (archivos guardados o subidos) e indicador global.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Modal } from "react-bootstrap";
@@ -18,11 +18,11 @@ import { clock, clockAt, defaultFileName, finalFileName, fmt, mmss, sourceLabel,
 import { EASE, useAnimateOnChange } from "./lib/hooks";
 import { AMBER, GREEN, INK, PH, RED } from "./lib/phases";
 import { dataDomain, expandBW, liveWindow, segmentsFrom } from "./lib/series";
+import { useExport } from "./lib/useExport";
 import { useLive } from "./lib/useLive";
 
 const LIVE_VIEW = { x: "t", win: "med", shade: true, sg: false, sgw: 0.8, sgo: 2 };
 const RESULT_VIEW = { med: "1", x: "i", shade: true, sg: false, sgw: 0.8, sgo: 2 };
-const NO_EXPORT = { state: null, blob: null, n: 0 };
 
 const grid = { flex: 1, minHeight: 0, display: "grid", gridTemplateColumns: "400px minmax(0,1fr)", gridTemplateRows: "minmax(0,1fr)", gap: 14 };
 const leftCol = { display: "flex", flexDirection: "column", gap: 12, minHeight: 0, overflow: "auto", padding: 2, margin: -2 };
@@ -43,7 +43,7 @@ export default function App() {
   const [rv, setRv] = useState(RESULT_VIEW);
   const [resTab, setResTab] = useState("charts");
   const [errAck, setErrAck] = useState({});
-  const [exp, setExp] = useState({ ...NO_EXPORT, dpi: 300 });
+  const { exp, setDpi, reset: resetExport, generate, download } = useExport(toast);
   const [summary, setSummary] = useState({ id: null, rows: null, loading: false, error: null });
   const zoneTimer = useRef(null);
 
@@ -100,7 +100,7 @@ export default function App() {
     const resetResult = () => {
       setRv({ ...RESULT_VIEW, med: isSeq ? "1" : "todas" });
       setResTab("charts");
-      setExp((e) => ({ ...e, ...NO_EXPORT }));
+      resetExport();
       setSummary({ id: null, rows: null, loading: false, error: null });
     };
     const onEnd = () => {
@@ -129,7 +129,7 @@ export default function App() {
       toast(`Medición ${p.medicion} de ${st.total} completada`, GREEN);
     }
     if (!p.terminado && st.terminado) onEnd();
-  }, [s, st, toast, live.endedOnArrival]);
+  }, [s, st, toast, resetExport, live.endedOnArrival]);
 
   // ---------- Acciones ----------
   const start = async () => {
@@ -259,36 +259,6 @@ export default function App() {
       .catch((e) => setSummary({ id: s.id, rows: null, loading: false, error: e.message }));
   }, [screen, resTab, s, summary.id, seq]);
 
-  // ---------- Exportar imágenes ----------
-  const onGenerate = async () => {
-    const dpi = Math.round(+exp.dpi);
-    if (!(dpi >= 72 && dpi <= 600)) {
-      toast("El DPI debe estar entre 72 y 600.", RED);
-      return;
-    }
-    setExp((e) => ({ ...e, state: "running", blob: null }));
-    try {
-      const { blob, n } = await api.exportZip({ dpi, sgWindow: rv.sg ? rv.sgw : null, sgOrder: rv.sgo });
-      setExp((e) => ({ ...e, state: "done", blob, n: n || 1, dpi }));
-      toast("Imágenes listas: graficos_mediciones.zip", GREEN);
-    } catch (e) {
-      setExp((x) => ({ ...x, ...NO_EXPORT }));
-      toast(e.message, RED);
-    }
-  };
-  const onDownload = () => {
-    if (!exp.blob) return;
-    const url = URL.createObjectURL(exp.blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "graficos_mediciones.zip";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 10000);
-    toast("Descarga iniciada: graficos_mediciones.zip");
-  };
-
   // ---------- Animación al cambiar de pantalla ----------
   const mainRef = useAnimateOnChange(`${tab}-${screen}`, [{ opacity: 0, transform: "translateY(12px)" }, { opacity: 1, transform: "none" }], { duration: 380, easing: EASE });
 
@@ -313,7 +283,7 @@ export default function App() {
 
   let content = null;
   if (tab === "ana") {
-    content = <AnalysisPage live={live} liveActive={liveActive} onBack={() => setTab("adq")} />;
+    content = <AnalysisPage live={live} liveActive={liveActive} onBack={() => setTab("adq")} toast={toast} unit={cfg?.zone?.unit} />;
   } else if (loadError) {
     content = (
       <div className="alert" role="alert" style={{ border: `1px solid ${RED}`, background: "oklch(0.96 0.02 27)", color: "oklch(0.38 0.12 27)" }}>
@@ -350,8 +320,9 @@ export default function App() {
       <div style={grid}>
         <div style={leftCol}>
           <ResultPanel session={s} status={st} nEnd={data.nEnd} cfgSummary={cfgSummary} onStart={start} onEdit={() => setModal(true)}
-            startError={modal ? null : cfgErr} starting={starting} exp={exp} onDpi={(v) => setExp((e) => ({ ...e, dpi: v }))}
-            onGenerate={onGenerate} onDownload={onDownload} exportProgress={exp.state === "running" ? live.exportProgress : null} />
+            startError={modal ? null : cfgErr} starting={starting} exp={exp} onDpi={setDpi}
+            onGenerate={() => generate({ sgWindow: rv.sg ? rv.sgw : null, sgOrder: rv.sgo })} onDownload={download}
+            exportProgress={exp.state === "running" ? live.exportProgress : null} />
         </div>
         <ChartsCard isResult proto={s.proto} title={chartTitle} data={chartData} view={rv} setView={setResultView} medOptions={medOptions}
           tab={resTab} setTab={setResTab} zoomKey={s.id}

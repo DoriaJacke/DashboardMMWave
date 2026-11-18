@@ -18,16 +18,20 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import itertools
 import math
 import os
 import threading
 import time
+from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import Body, FastAPI, HTTPException, WebSocket
+import pandas as pd
+from fastapi import Body, FastAPI, HTTPException, Request, WebSocket
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 
@@ -42,7 +46,7 @@ from .acquisition import (
     list_serial_ports_info,
 )
 from .config import ConfigStore, normalize, resolve_filename, validate_start
-from .data_io import phase_summary, records_to_long
+from .data_io import FORMATO_SECUENCIA, load_csv, phase_summary, records_to_long, start_wall
 from .plots import SavgolConfig, export_zip
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -50,7 +54,10 @@ DEFAULT_DATA_DIR = ROOT / "datos"
 FRONTEND_DIST = ROOT / "frontend" / "dist"
 
 STATUS_EVERY_S = 1.0   # envío periódico del estado
-POLL_S = 0.1           # cada cuánto se revisa si cambió la fase
+POLL_S = 0.1           # cada cuánto se revisa si hay datos nuevos o cambió la fase
+
+MAX_UPLOAD_BYTES = 200 * 1024 * 1024
+ANALYSIS_CACHE_SIZE = 4  # archivos abiertos en Análisis que se conservan para exportar
 
 
 # ============================================================
@@ -88,6 +95,52 @@ def record_json(r: dict) -> dict:
 
 def dist_json(points: list[tuple[float, float]]) -> list[list[float]]:
     return [[round(t, 3), v] for t, v in points if _num(v) is not None]
+
+
+def _text(value: Any) -> Optional[str]:
+    return None if value is None or pd.isna(value) else str(value)
+
+
+def long_json(df: pd.DataFrame) -> list[dict]:
+    """Formato largo de un CSV -> los mismos {t, m, f, k, v} que record_json."""
+    out = []
+    for r in df.itertuples(index=False):
+        t = _num(r.t)
+        tipo = _text(r.tipo)
+        if t is None or tipo is None:
+            continue
+        if tipo == "BW":
+            value: Any = [_num(getattr(r, c)) for c in WAVE_COLS]
+        elif tipo in ("HR", "BR", "DIST"):
+            value = _num(r.valor_1)
+        elif tipo in ("EVENT", "MARK"):
+            value = _text(r.evento)
+        else:
+            value = None
+        medicion = None if pd.isna(r.medicion) else int(r.medicion)
+        out.append({"t": round(t, 3), "m": medicion, "f": _text(r.fase), "k": tipo, "v": value})
+    return out
+
+
+def summary_rows(df: pd.DataFrame) -> list[dict]:
+    table = phase_summary(df)
+    rows = []
+    if table.empty:
+        return rows
+    for (medicion, fase), row in table.iterrows():
+        if pd.isna(medicion):
+            continue
+        item = {"medicion": int(medicion), "fase": str(fase)}
+        for tipo in ("HR", "BR", "DIST"):
+            n = row.get(f"{tipo} n")
+            n = 0 if n is None or (isinstance(n, float) and math.isnan(n)) else int(n)
+            item[tipo] = {
+                "media": _num(row.get(f"{tipo} media")) if n else None,
+                "desv": _num(row.get(f"{tipo} desv")) if n else None,
+                "n": n,
+            }
+        rows.append(item)
+    return rows
 
 
 def status_json(session: AcquisitionSession) -> dict:
@@ -315,31 +368,69 @@ def create_app(data_dir: Optional[Path] = None) -> FastAPI:
     def summary():
         session = require_session()
         records, _ = session.snapshot()
-        table = phase_summary(records_to_long(records))
-        rows = []
-        if not table.empty:
-            for (medicion, fase), row in table.iterrows():
-                item = {"medicion": int(medicion), "fase": str(fase)}
-                for tipo in ("HR", "BR", "DIST"):
-                    n = row.get(f"{tipo} n")
-                    n = 0 if n is None or (isinstance(n, float) and math.isnan(n)) else int(n)
-                    item[tipo] = {
-                        "media": _num(row.get(f"{tipo} media")) if n else None,
-                        "desv": _num(row.get(f"{tipo} desv")) if n else None,
-                        "n": n,
-                    }
-                rows.append(item)
-        return {"rows": rows}
+        return {"rows": summary_rows(records_to_long(records))}
+
+    # --------------------------------------------------------
+    # Análisis de archivos guardados o subidos
+    # --------------------------------------------------------
+
+    analysis_cache: "OrderedDict[str, pd.DataFrame]" = OrderedDict()
+
+    def analysis_payload(key: str, name: str, origin: str, data: bytes) -> dict:
+        try:
+            fmt, raw, long = load_csv(data)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        except Exception as exc:
+            raise HTTPException(400, f"No se pudo leer {name}: {exc}")
+
+        analysis_cache[key] = long
+        analysis_cache.move_to_end(key)
+        while len(analysis_cache) > ANALYSIS_CACHE_SIZE:
+            analysis_cache.popitem(last=False)
+
+        records = long_json(long)
+        seq = fmt == FORMATO_SECUENCIA
+        mediciones = sorted({r["m"] for r in records if r["m"] is not None})
+        t_values = [r["t"] for r in records]
+        return {
+            "key": key,
+            "file": name,
+            "origin": origin,
+            "proto": "seq" if seq else "cont",
+            "n_rows": int(len(raw)),
+            "mediciones": mediciones if seq else [],
+            "n_end": sum(1 for r in records if r["k"] == "END"),
+            "t_total": max(t_values) if t_values else 0.0,
+            "t0_wall": start_wall(raw, fmt),
+            "records": records,
+            "dist": [[r["t"], r["v"]] for r in records if r["k"] == "DIST" and r["v"] is not None],
+            "summary": summary_rows(long) if seq else [],
+        }
+
+    @app.get("/api/files/{name}")
+    def open_file(name: str):
+        path = data_dir / name
+        if Path(name).name != name or path.suffix.lower() != ".csv" or not path.is_file():
+            raise HTTPException(404, f"No se encontró {name} en la carpeta de datos.")
+        stat = path.stat()
+        return analysis_payload(f"datos:{name}:{stat.st_mtime_ns}", name, "datos", path.read_bytes())
+
+    @app.post("/api/analysis/upload")
+    async def upload(request: Request, name: str = "archivo.csv"):
+        data = await request.body()
+        if not data:
+            raise HTTPException(400, "El archivo está vacío.")
+        if len(data) > MAX_UPLOAD_BYTES:
+            raise HTTPException(413, "El archivo supera los 200 MB.")
+        key = f"upload:{hashlib.sha1(data).hexdigest()[:16]}"
+        return await run_in_threadpool(analysis_payload, key, Path(name).name, "upload", data)
 
     # --------------------------------------------------------
     # Exportar imágenes
     # --------------------------------------------------------
 
-    @app.post("/api/export")
-    def export(dpi: int = 300, sg_window: Optional[float] = None, sg_order: Optional[int] = None):
-        session = require_session()
-        if session.running:
-            raise HTTPException(409, "Espera a que termine la adquisición.")
+    def run_export(df: pd.DataFrame, dpi: int, sg_window: Optional[float], sg_order: Optional[int]) -> Response:
         if not 72 <= dpi <= 600:
             raise HTTPException(400, "El DPI debe estar entre 72 y 600.")
         savgol = None
@@ -348,8 +439,6 @@ def create_app(data_dir: Optional[Path] = None) -> FastAPI:
                 raise HTTPException(400, "Revisa la ventana (0,1–3 s) y el orden (2–5) del filtro.")
             savgol = SavgolConfig(ventana_s=sg_window, orden=sg_order)
 
-        records, _ = session.snapshot()
-        df = records_to_long(records)
         n_images = int(df["medicion"].dropna().nunique())
         if not n_images:
             raise HTTPException(400, "No hay datos para exportar.")
@@ -374,6 +463,21 @@ def create_app(data_dir: Optional[Path] = None) -> FastAPI:
                 "X-Image-Count": str(n_images),
             },
         )
+
+    @app.post("/api/export")
+    def export(dpi: int = 300, sg_window: Optional[float] = None, sg_order: Optional[int] = None):
+        session = require_session()
+        if session.running:
+            raise HTTPException(409, "Espera a que termine la adquisición.")
+        records, _ = session.snapshot()
+        return run_export(records_to_long(records), dpi, sg_window, sg_order)
+
+    @app.post("/api/analysis/export")
+    def analysis_export(key: str, dpi: int = 300, sg_window: Optional[float] = None, sg_order: Optional[int] = None):
+        df = analysis_cache.get(key)
+        if df is None:
+            raise HTTPException(404, "El archivo ya no está en memoria. Vuelve a abrirlo.")
+        return run_export(df, dpi, sg_window, sg_order)
 
     # --------------------------------------------------------
     # En vivo
@@ -423,7 +527,8 @@ def create_app(data_dir: Optional[Path] = None) -> FastAPI:
                     last_status = now
                 elif session is not None:
                     signature = status_signature(session)
-                    if signature != last_signature or now - last_status >= STATUS_EVERY_S:
+                    has_new = len(session.records) > n_records or len(session.dist_history) > n_dist
+                    if has_new or signature != last_signature or now - last_status >= STATUS_EVERY_S:
                         message: dict = {"type": "update", "status": status_json(session)}
                         records, dist = session.data_since(n_records, n_dist)
                         if records or dist:

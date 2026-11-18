@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import io
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -65,6 +66,22 @@ def continuous_to_long(df: pd.DataFrame) -> pd.DataFrame:
         if record is not None:
             records.append(record)
     return records_to_long(records)
+
+
+def start_wall(raw: pd.DataFrame, fmt: str) -> Optional[str]:
+    """Hora del PC que corresponde a t = 0 (ISO), o None si el archivo no la trae."""
+    if fmt == FORMATO_SECUENCIA:
+        start = pd.to_datetime(raw["timestamp"], errors="coerce").min()
+    else:
+        if "datetime" not in raw.columns:
+            return None
+        wall = pd.to_datetime(raw["datetime"], errors="coerce")
+        t = pd.to_numeric(raw["timestamp"], errors="coerce")
+        valid = wall.notna() & t.notna()
+        if not valid.any():
+            return None
+        start = wall[valid].iloc[0] - pd.to_timedelta(t[valid].iloc[0], unit="s")
+    return None if pd.isna(start) else start.isoformat(timespec="milliseconds")
 
 
 def load_csv(data: bytes) -> tuple[str, pd.DataFrame, pd.DataFrame]:

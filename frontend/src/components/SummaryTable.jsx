@@ -6,10 +6,10 @@ import { PH, SHADE } from "../lib/phases";
 const right = { textAlign: "right" };
 const n = { textAlign: "right", color: "var(--color-neutral-700)" };
 
-function stat(s, unit = "") {
+function stat(s, unit = "", d = 1) {
   if (!s || !s.n || s.media == null) return "—";
-  const sd = s.desv == null ? "—" : fmt(s.desv, 1);
-  return `${fmt(s.media, 1)} ± ${sd}${unit ? ` ${unit}` : ""}`;
+  const sd = s.desv == null ? "—" : fmt(s.desv, d);
+  return `${fmt(s.media, d)} ± ${sd}${unit ? ` ${unit}` : ""}`;
 }
 
 export default function SummaryTable({ proto, rows, loading, error, unit }) {
@@ -52,7 +52,7 @@ export default function SummaryTable({ proto, rows, loading, error, unit }) {
             <td style={n}>{r.HR.n}</td>
             <td style={right}>{stat(r.BR)}</td>
             <td style={n}>{r.BR.n}</td>
-            <td style={right}>{stat(r.DIST, unit)}</td>
+            <td style={right}>{stat(r.DIST, unit, 2)}</td>
             <td style={n}>{r.DIST.n}</td>
           </tr>
         );
