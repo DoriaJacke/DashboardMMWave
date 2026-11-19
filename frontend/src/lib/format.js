@@ -31,8 +31,9 @@ export function clockAt(t0Wall, t) {
   return clock(new Date(new Date(t0Wall).getTime() + t * 1000));
 }
 
-export const defaultFileName = (proto, stamp) =>
-  proto === "seq" ? `MR60BHA1_mediciones_${stamp}.csv` : `MR60BHA1_experimento_${stamp}.csv`;
+const FILE_PREFIX = { seq: "MR60BHA1_mediciones", apnea: "MR60BHA1_apnea", cont: "MR60BHA1_experimento" };
+
+export const defaultFileName = (proto, stamp) => `${FILE_PREFIX[proto] || FILE_PREFIX.cont}_${stamp}.csv`;
 
 export function finalFileName(file, proto, stamp) {
   let n = (file || "").trim() || defaultFileName(proto, stamp);

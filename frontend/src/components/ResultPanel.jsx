@@ -3,7 +3,7 @@
 
 import { Play } from "lucide-react";
 import { fmt, mmss } from "../lib/format";
-import { AMBER, GREEN, RED } from "../lib/phases";
+import { AMBER, GREEN, RED, isSeqLike } from "../lib/phases";
 import ExportCard from "./ExportCard";
 
 const KINDS = {
@@ -19,7 +19,7 @@ const dt = { fontWeight: 400, color: "var(--color-neutral-700)" };
 
 export default function ResultPanel({ session, status, nEnd, cfgSummary, onStart, onEdit, startError, starting, exp, onDpi, onGenerate, onDownload, exportProgress }) {
   const k = KINDS[endKind(status)];
-  const seq = session.proto === "seq";
+  const seq = isSeqLike(session.proto);
 
   return (
     <>
@@ -35,7 +35,11 @@ export default function ResultPanel({ session, status, nEnd, cfgSummary, onStart
           <dt style={dt}>Registros guardados</dt>
           <dd style={{ margin: 0, fontWeight: 500 }}>{fmt(status.n_saved)}</dd>
           <dt style={dt}>Mediciones</dt>
-          <dd style={{ margin: 0 }}>{seq ? `Mediciones completas ${nEnd} de ${status.total}` : "Captura continua"}</dd>
+          <dd style={{ margin: 0 }}>
+            {session.proto === "apnea"
+              ? nEnd ? "Apnea y monitoreo completos" : "Apnea + monitoreo incompleto"
+              : seq ? `Mediciones completas ${nEnd} de ${status.total}` : "Captura continua"}
+          </dd>
           <dt style={dt}>Duración</dt>
           <dd style={{ margin: 0 }}>{mmss(status.t)}</dd>
         </dl>

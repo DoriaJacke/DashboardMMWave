@@ -2,9 +2,10 @@
 # ADQUISICIÓN MR60BHA1
 #
 # Fuentes de datos (puerto serial ESP32 o simulador), sesión de
-# adquisición en segundo plano y los dos protocolos de toma de datos:
+# adquisición en segundo plano y los protocolos de toma de datos:
 #
 #   RetentionProtocol  -> basado en MEDICION20SEQRES.py
+#   ApneaProtocol      -> una apnea y luego monitoreo continuo
 #   ContinuousProtocol -> basado en tomadatosSEPT.py
 # ============================================================
 
@@ -91,7 +92,7 @@ class SimulatedSource:
         self._hold = False
         self._hr = 72.0
         self._br = 15.0
-        self._dist = 55.0
+        self._dist = 0.55  # m, como el MR60BHA1
         self._wave_phase = 0.0
 
     def set_hold(self, hold: bool) -> None:
@@ -130,8 +131,8 @@ class SimulatedSource:
             self._br = max(self._br, 0.0)
             return f"BR,{self._br:.0f}"
         if kind == "DIST":
-            self._dist += 0.1 * (55.0 - self._dist) + random.gauss(0, 1.0)
-            return f"DIST,{self._dist:.1f}"
+            self._dist += 0.1 * (0.55 - self._dist) + random.gauss(0, 0.01)
+            return f"DIST,{self._dist:.2f}"
         return "EVENT," + random.choice(["QUIETO", "QUIETO", "QUIETO", "MOVIMIENTO"])
 
     def close(self) -> None:
@@ -538,6 +539,56 @@ class RetentionProtocol:
                              fase_fin=time.monotonic() + self.t_pausa)
                 if not s.wait(self.t_pausa):
                     return
+
+
+# ============================================================
+# PROTOCOLO 3: APNEA + MONITOREO CONTINUO
+# ============================================================
+
+@dataclass
+class ApneaProtocol(RetentionProtocol):
+    """
+    Una maniobra de apnea seguida de monitoreo continuo:
+    ESPERA -> NORMAL (basal, opcional) -> PREP -> HOLD -> MONITOREO.
+    Guarda el mismo CSV largo que la secuencia (medición 1).
+    """
+    t_monitor: Optional[float] = None   # None = hasta detener
+    n_mediciones: int = 1
+    nombre: str = "Apnea + monitoreo continuo"
+
+    def run(self, s: AcquisitionSession) -> None:
+        m = 1
+        s.pause_recording(m, "ESPERA")
+        s.set_status(estado="COLÓCATE EN POSICIÓN", fase="ESPERA", medicion=m, fase_fin=None)
+        if self.esperar_usuario and not s.wait_user():
+            return
+
+        if self.t_normal > 0 and not s.run_phase(m, "NORMAL", "RESPIRACION_NORMAL", 0,
+                                                 "RESPIRACIÓN NORMAL", self.t_normal):
+            return
+
+        s.start_phase(m, "PREP", "PREPARACION", 0, "PREPÁRATE", 1 + self.t_countdown)
+        if not s.wait(1):
+            return
+        for cuenta in range(self.t_countdown, 0, -1):
+            s.set_status(cuenta=cuenta)
+            if not s.wait(1):
+                return
+        s.set_status(cuenta=None)
+
+        if not s.run_phase(m, "HOLD", "APNEA", 1, "AGUANTA LA RESPIRACIÓN", self.t_hold):
+            return
+
+        s.start_phase(m, "MONITOREO", "MONITOREO_CONTINUO", 0, "MONITOREO CONTINUO", self.t_monitor)
+        if self.t_monitor:
+            if not s.wait(self.t_monitor):
+                return
+        else:
+            # Sin duración: «Detener adquisición» es el fin normal del monitoreo.
+            s.stop_event.wait()
+            s.status.detenido = False
+        s.end_measurement(m)
+        s.set_status(estado="ADQUISICIÓN COMPLETADA", fase="FIN", fase_fin=None)
 
 
 # ============================================================

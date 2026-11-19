@@ -23,14 +23,22 @@ SEQ_FIELDS = {
     "cd": (0, 10),     # cuenta regresiva (s)
     "tp": (0, 60),     # pausa entre mediciones (s)
 }
-INT_FIELDS = {"n", "cd", "baud"}
+# Campos del protocolo de apnea + monitoreo continuo: (mínimo, máximo).
+APNEA_FIELDS = {
+    "a_tn": (0, 600),      # respiración basal antes de la apnea (s, 0 = sin basal)
+    "a_cd": (0, 10),       # cuenta regresiva (s)
+    "a_th": (1, 120),      # apnea (s)
+    "a_tm": (0, 36000),    # monitoreo continuo (s, 0 = hasta detener)
+}
+INT_FIELDS = {"n", "cd", "baud", "a_cd"}
 DUR_RANGE = (0, 36000)  # captura continua (s, 0 = hasta detener)
+PROTOCOLS = ("seq", "cont", "apnea")
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "src": "serial",       # "serial" | "sim"
     "port": "",
     "baud": 115200,
-    "proto": "seq",        # "seq" | "cont"
+    "proto": "seq",        # "seq" | "cont" | "apnea"
     "n": 20,
     "tn": 20,
     "th": 10,
@@ -39,6 +47,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "tp": 3,
     "esperar": True,
     "duracion": 0,
+    "a_tn": 20,
+    "a_cd": 3,
+    "a_th": 10,
+    "a_tm": 300,
     # Zona adecuada del medidor de distancia, en metros (el MR60BHA1 entrega DIST en m).
     "zone": {"min": 0.4, "max": 1.5, "scale": 3, "unit": "m"},
 }
@@ -73,13 +85,13 @@ def normalize(raw: Any, base: Optional[dict] = None) -> dict:
         return cfg
     if raw.get("src") in ("serial", "sim"):
         cfg["src"] = raw["src"]
-    if raw.get("proto") in ("seq", "cont"):
+    if raw.get("proto") in PROTOCOLS:
         cfg["proto"] = raw["proto"]
     if isinstance(raw.get("port"), str):
         cfg["port"] = raw["port"].strip()[:64]
     if isinstance(raw.get("esperar"), bool):
         cfg["esperar"] = raw["esperar"]
-    for key in ("baud", *SEQ_FIELDS, "duracion"):
+    for key in ("baud", *SEQ_FIELDS, "duracion", *APNEA_FIELDS):
         number = to_number(raw.get(key))
         if number is not None and number >= 0:
             cfg[key] = int(number) if key in INT_FIELDS else _compact(number)
@@ -101,7 +113,7 @@ def validate_start(raw: Any) -> Optional[tuple[str, str]]:
     """
     if not isinstance(raw, dict):
         return "range", MSG_RANGE
-    if raw.get("src") not in ("serial", "sim") or raw.get("proto") not in ("seq", "cont"):
+    if raw.get("src") not in ("serial", "sim") or raw.get("proto") not in PROTOCOLS:
         return "range", MSG_RANGE
     if raw["src"] == "serial":
         if not str(raw.get("port") or "").strip():
@@ -109,8 +121,9 @@ def validate_start(raw: Any) -> Optional[tuple[str, str]]:
         baud = to_number(raw.get("baud"))
         if baud is None or baud <= 0 or not baud.is_integer():
             return "range", MSG_RANGE
-    if raw["proto"] == "seq":
-        for key, (low, high) in SEQ_FIELDS.items():
+    if raw["proto"] in ("seq", "apnea"):
+        fields = SEQ_FIELDS if raw["proto"] == "seq" else APNEA_FIELDS
+        for key, (low, high) in fields.items():
             number = to_number(raw.get(key))
             if number is None or not low <= number <= high:
                 return "range", MSG_RANGE

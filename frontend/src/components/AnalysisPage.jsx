@@ -7,7 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { clock, fmt, mmss, pad } from "../lib/format";
 import { useNow } from "../lib/hooks";
-import { RED, phaseOf } from "../lib/phases";
+import { RED, isSeqLike, phaseOf } from "../lib/phases";
 import { dataDomain, emptyStore, expandBW, ingest, segmentsFrom } from "../lib/series";
 import { useExport } from "../lib/useExport";
 import ChartsCard from "./ChartsCard";
@@ -26,7 +26,7 @@ const errorBox = { padding: "8px 10px", fontSize: 13, border: `1px solid ${RED}`
 
 const sizeText = (b) => (b < 1048576 ? `${fmt(b / 1024, b < 10240 ? 1 : 0)} KB` : `${fmt(b / 1048576, 1)} MB`);
 const dayText = (d) => `${pad(d.getDate())}-${pad(d.getMonth() + 1)}-${d.getFullYear()}`;
-const FORMATS = { seq: "Secuencia (MEDICION20SEQRES)", cont: "Continuo (tomadatosSEPT)" };
+const FORMATS = { seq: "Secuencia (MEDICION20SEQRES)", apnea: "Apnea + monitoreo (formato de secuencia)", cont: "Continuo (tomadatosSEPT)" };
 
 export default function AnalysisPage({ live, liveActive, onBack, toast, unit }) {
   useNow(1000, liveActive);
@@ -57,7 +57,7 @@ export default function AnalysisPage({ live, liveActive, onBack, toast, unit }) 
       const d = await fetcher();
       if (id !== reqId.current) return;
       setDs(d);
-      setViewState({ ...VIEW, med: d.proto === "seq" && d.mediciones.length ? String(d.mediciones[0]) : "todas" });
+      setViewState({ ...VIEW, med: isSeqLike(d.proto) && d.mediciones.length ? String(d.mediciones[0]) : "todas" });
       setTab("charts");
       resetExport();
     } catch (e) {
@@ -74,7 +74,7 @@ export default function AnalysisPage({ live, liveActive, onBack, toast, unit }) 
   };
 
   // ---------- Datos para los gráficos (igual que el Resultado) ----------
-  const seq = ds?.proto === "seq";
+  const seq = isSeqLike(ds?.proto);
   const data = useMemo(() => {
     if (!ds) return null;
     const store = emptyStore();
@@ -109,7 +109,9 @@ export default function AnalysisPage({ live, liveActive, onBack, toast, unit }) 
   const setView = useCallback((patch) => setViewState((v) => ({ ...v, ...patch })), []);
   const title = !ds
     ? ""
-    : seq
+    : ds.proto === "apnea"
+      ? "Apnea + monitoreo — MR60BHA1"
+      : seq
       ? view.med === "todas" ? "Todas las mediciones — MR60BHA1" : `Medición ${view.med} — MR60BHA1`
       : "Captura continua — MR60BHA1";
 

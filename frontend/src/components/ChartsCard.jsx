@@ -6,7 +6,7 @@ import { Fragment, memo, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Settings2, ZoomIn, ZoomOut } from "lucide-react";
 import { lb, medianDt, nearest, nice, pathOf, segAt, sgCoef, sgWindow } from "../lib/chartMath";
 import { clockAt, fmt, fmtVal } from "../lib/format";
-import { PH, SHADE } from "../lib/phases";
+import { PH, SHADE, isSeqLike } from "../lib/phases";
 import { useSize } from "../lib/hooks";
 
 const ML = 58;
@@ -18,7 +18,7 @@ const DEFS = [
   { title: "Frecuencia respiratoria BR", unit: "resp/min", short: "resp/min", key: "BR", def: [0, 30] },
 ];
 const PARTIAL_MSG = "Sin datos de onda BW. El firmware puede estar enviando solo HR y BR.";
-const WIN_LABEL = { med: "Medición actual", 60: "Últimos 60 s", todo: "Todo" };
+const WIN_LABEL = { med: "Medición actual", 60: "Últimos 60 s", 300: "Últimos 5 min", todo: "Todo" };
 const muted = { color: "var(--color-neutral-700)" };
 
 const decimals = (st) => (st < 0.1 ? 2 : st < 1 ? 1 : 0);
@@ -180,7 +180,7 @@ function tooltipLines(c, charts, frac, segs, markers, t0Wall) {
 }
 
 function markTitle(mk, proto, t0Wall) {
-  const where = proto === "seq" && mk.m ? ` · medición ${mk.m} · ${PH[mk.ph]?.name ?? mk.ph}` : "";
+  const where = isSeqLike(proto) && mk.m ? ` · medición ${mk.m} · ${PH[mk.ph]?.name ?? mk.ph}` : "";
   return `${mk.label}${where} · t = ${fmt(mk.t, 1)} s · ${clockAt(t0Wall, mk.t)}`;
 }
 
@@ -319,7 +319,7 @@ function ChartsArea({ data, view, zoom, setZoom, proto, sgInfo }) {
       size.w
         ? buildCharts({
             series: data.series, idx, dom: data.dom, segs: data.segs, now: data.now, sg: view.sg, sgo: +view.sgo,
-            sgN: sgInfo.sgN, dt: sgInfo.dt, shade: view.shade && proto === "seq", partial: data.partial,
+            sgN: sgInfo.sgN, dt: sgInfo.dt, shade: view.shade && isSeqLike(proto), partial: data.partial,
             emptyMsg: data.emptyMsg, markers: data.markers, W: size.w, ...lay, zoom,
           })
         : [],
@@ -390,7 +390,7 @@ function OptionsPanel({ isLive, isResult, proto, view, setView, medOptions, shad
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
-  const wins = (proto === "seq" ? ["med"] : []).concat(["60", "todo"]);
+  const wins = (isSeqLike(proto) ? ["med"] : []).concat(["60", "300", "todo"]);
   const seg = (name, value, label, on, set) => (
     <Fragment key={value}>
       <input type="radio" className="btn-check" id={`${name}-${value}`} name={name} checked={on} onChange={set} />
@@ -409,7 +409,7 @@ function OptionsPanel({ isLive, isResult, proto, view, setView, medOptions, shad
         <button type="button" className="btn-close" aria-label="Cerrar" onClick={onClose} style={{ fontSize: 11 }} />
       </div>
       <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "10px 16px", fontSize: 13 }}>
-        {isResult && proto === "seq" && (
+        {isResult && isSeqLike(proto) && (
           <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
             Medición
             <select className="form-select" value={view.med} onChange={(e) => setView({ med: e.target.value })}
@@ -492,9 +492,9 @@ function ChartsCard({ isLive, isResult, proto, title, data, view, setView, medOp
   const sgInfo = useMemo(() => ({ dt, sgN: view.sg ? sgWindow(view.sgw, +view.sgo, dt) : 0 }), [dt, view.sg, view.sgw, view.sgo]);
   const sgNote = `Muestreo BW estimado: ${fmt(1 / dt, 1)} Hz → ventana de ${sgInfo.sgN} muestras (${fmt(sgInfo.sgN * dt, 2)} s), polinomio de orden ${view.sgo}.`;
 
-  const shadeDisabled = view.x !== "t" || proto !== "seq";
+  const shadeDisabled = view.x !== "t" || !isSeqLike(proto);
   const summary = [
-    isResult && proto === "seq" ? (view.med === "todas" ? "Todas" : `Medición ${view.med}`) : null,
+    isResult && isSeqLike(proto) ? (view.med === "todas" ? "Todas" : `Medición ${view.med}`) : null,
     view.x === "t" ? "Tiempo" : "Índice",
     isLive ? WIN_LABEL[view.win] : null,
     view.shade && !shadeDisabled ? "Fases" : null,

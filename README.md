@@ -161,13 +161,32 @@ Para cada medición se repite el ciclo:
 
 Todos los parámetros son configurables: número de mediciones (20 por defecto), duraciones, cuenta regresiva, pausa y si se espera confirmación antes de cada medición (equivale al "Presiona ENTER" del script original).
 
+#### Apnea + monitoreo
+
+Una sola maniobra de apnea y, a continuación, monitoreo continuo:
+
+| Fase | Etiqueta en el CSV | `flag_hold` | Duración por defecto |
+|---|---|---|---|
+| Espera a que la persona se posicione | (no se guarda) | – | hasta presionar el botón |
+| Respiración basal | `NORMAL` / `RESPIRACION_NORMAL` | 0 | 20 s (0 = sin basal) |
+| Preparación + cuenta regresiva | `PREP` / `PREPARACION` | 0 | 1 s + 3 s |
+| Apnea voluntaria | `HOLD` / `APNEA` | 1 | 10 s |
+| Monitoreo continuo | `MONITOREO` / `MONITOREO_CONTINUO` | 0 | 300 s (0 = hasta detener) |
+| Fin | fila `END` | 0 | – |
+
+- Usa el mismo CSV de formato largo que la secuencia (medición 1), así que Análisis, el resumen por fase y la exportación funcionan igual. El nombre por defecto es `MR60BHA1_apnea_AAAAMMDD_HHMMSS.csv`.
+- Si el monitoreo no tiene duración, **Detener adquisición** es el fin normal: se escribe la fila `END` y el resultado queda como *completada*.
+- Durante el monitoreo el banner muestra el tiempo restante o el transcurrido, y se pueden poner marcas como en las demás fases.
+- Los gráficos en vivo empiezan en la ventana *Últimos 5 min*: mientras la toma dura menos de 5 min se ve desde el inicio (con la basal y la apnea); después la ventana avanza y muestra siempre los últimos 5 min. Se puede cambiar en las opciones del gráfico.
+- Las duraciones de este modo se guardan aparte de las de la secuencia (`a_tn`, `a_cd`, `a_th`, `a_tm` en la configuración), así que cambiar una no altera la otra.
+
 #### Captura continua (basado en `tomadatosSEPT.py`)
 
 Registra todas las líneas recibidas hasta presionar *Detener adquisición*, o durante una duración fija si se indica (0 = indefinida).
 
 ### 3. Archivo de salida
 
-Los CSV se guardan en `datos/` con un nombre por defecto que incluye fecha y hora (`MR60BHA1_mediciones_AAAAMMDD_HHMMSS.csv` o `MR60BHA1_experimento_AAAAMMDD_HHMMSS.csv`). El nombre se puede editar; si el archivo ya existe, el dashboard no lo sobrescribe.
+Los CSV se guardan en `datos/` con un nombre por defecto que incluye fecha y hora (`MR60BHA1_mediciones_…`, `MR60BHA1_apnea_…` o `MR60BHA1_experimento_AAAAMMDD_HHMMSS.csv`). El nombre se puede editar; si el archivo ya existe, el dashboard no lo sobrescribe.
 
 ### 4. Configuración conservada
 
@@ -185,7 +204,7 @@ Mientras se adquiere:
   - Funciona también durante la espera de posicionamiento (antes de presionar "Estoy en posición"), para ubicar a la persona antes de medir.
   - La zona adecuada (0,40–1,50 m por defecto) y la escala del medidor (3 m) se configuran con el botón que muestra la zona actual. Una configuración guardada en cm se convierte sola a metros.
   - Si no llegan datos `DIST` por más de 5 s, el medidor indica *Sin datos recientes*.
-- **Gráficos** de waveform BW, HR y BR, con el eje X compartido. El botón de opciones cambia el eje X (*Tiempo* o *Índice de muestra*), la ventana (*Medición actual*, *Últimos 60 s*, *Todo*), el sombreado de fases y el filtro Savitzky-Golay. En *Medición actual* las fases que faltan se ven atenuadas y una línea punteada marca el instante actual.
+- **Gráficos** de waveform BW, HR y BR, con el eje X compartido. El botón de opciones cambia el eje X (*Tiempo* o *Índice de muestra*), la ventana (*Medición actual*, *Últimos 60 s*, *Últimos 5 min*, *Todo*), el sombreado de fases y el filtro Savitzky-Golay. En *Medición actual* las fases que faltan se ven atenuadas y una línea punteada marca el instante actual.
 - **Zoom:** arrastrar sobre un gráfico acerca los tres; doble clic restablece. Los botones ← + − → hacen lo mismo con el teclado o el mouse.
 - Botón **Detener adquisición**, en el encabezado.
 
@@ -196,7 +215,7 @@ Si se recarga la página o se abre otra pestaña, se vuelve a ver la adquisició
 Al terminar se muestra el estado final (completada, detenida manualmente o con error), la configuración de la siguiente adquisición y:
 
 - **Gráficos** de la adquisición, por medición o todas, por índice de muestra o por tiempo.
-- **Resumen por fase:** media, desviación estándar y cantidad de datos de HR, BR y distancia por medición y fase (solo en secuencia).
+- **Resumen por fase:** media, desviación estándar y cantidad de datos de HR, BR y distancia por medición y fase (en secuencia y en apnea + monitoreo).
 - **Exportar imágenes:** genera un ZIP con una imagen `medicion_XX.png` por medición (Matplotlib, mismo estilo de `HRBRWF.py`, DPI configurable, 300 por defecto).
 
 ### Marcas
@@ -220,9 +239,9 @@ Disponible en la vista en vivo y en el resultado. Al activarlo se superponen la 
 Sirve para revisar mediciones ya guardadas, incluidas las antiguas, sin hacer una adquisición nueva.
 
 - **Archivos:** lista los CSV de `datos/` del más reciente al más antiguo, con fecha y tamaño. Al hacer clic en uno se abre. **Actualizar** vuelve a leer la carpeta. **Subir CSV desde el equipo** abre un archivo de otra carpeta; no se copia a `datos/`.
-- **Formato:** se detecta solo. Se leen los CSV de secuencia (`MEDICION20SEQRES.py`) y de captura continua (`tomadatosSEPT.py`), también los antiguos sin columna `marker`.
+- **Formato:** se detecta solo. Se leen los CSV de secuencia (`MEDICION20SEQRES.py`), de apnea + monitoreo (formato de secuencia con fase `MONITOREO`) y de captura continua (`tomadatosSEPT.py`), también los antiguos sin columna `marker`.
 - **Archivo abierto:** nombre, origen, formato, filas, mediciones (y cuántas están completas), duración y hora de inicio.
-- **Gráficos y resumen por fase:** los mismos del Resultado de una adquisición: selector de medición, eje en muestras o en segundos, sombreado de fases, marcas y filtro Savitzky-Golay. El resumen por fase está disponible solo para archivos de secuencia.
+- **Gráficos y resumen por fase:** los mismos del Resultado de una adquisición: selector de medición, eje en muestras o en segundos, sombreado de fases, marcas y filtro Savitzky-Golay. El resumen por fase está disponible para archivos de secuencia y de apnea + monitoreo.
 - **Exportar imágenes:** genera un PNG por medición del archivo abierto y lo descarga como `graficos_<archivo>.zip`.
 
 Si el archivo elegido es el que se está grabando, se muestra lo guardado hasta el momento de abrirlo. Mientras hay una adquisición en curso, un indicador arriba muestra su estado y permite volver a ella.
@@ -231,7 +250,7 @@ Si el archivo elegido es el que se está grabando, se muestra lo guardado hasta 
 
 ## Formatos de CSV
 
-### Secuencia con retención (formato largo)
+### Secuencia con retención y apnea + monitoreo (formato largo)
 
 Una fila por línea recibida, más filas de marca de fase:
 

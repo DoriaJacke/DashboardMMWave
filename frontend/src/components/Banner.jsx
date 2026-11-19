@@ -5,23 +5,24 @@
 import { Flag } from "lucide-react";
 import { EASE, useAnimateOnChange, useNow } from "../lib/hooks";
 import { clock, clockAt, fmt, mmss } from "../lib/format";
-import { PH, SHADE, phaseOf, perMeasurement, plannedDurations } from "../lib/phases";
+import { PH, phaseOf, perMeasurement, phaseSeq, plannedDurations } from "../lib/phases";
 
 /** Segundos que faltan para terminar la secuencia (sin contar las esperas de confirmación). */
-function remainingTotal(status, p, N, rem) {
-  const per = perMeasurement(p);
-  const tp = +p.tp;
+function remainingTotal(status, p, N, rem, proto) {
+  const per = perMeasurement(p, proto);
+  const tp = +p.tp || 0;
   const durs = plannedDurations(p);
+  const phases = phaseSeq(proto, p);
   const m = status.medicion;
   const fase = status.fase;
   if (fase === "FIN") return 0;
   if (fase === "CONECTANDO" || !m) return N * per + (N - 1) * tp;
   if (fase === "ESPERA") return (N - m + 1) * per + (N - m) * tp;
   if (fase === "PAUSA") return (rem || 0) + (N - m) * per + Math.max(0, N - m - 1) * tp;
-  const i = SHADE.indexOf(fase);
+  const i = phases.indexOf(fase);
   if (i < 0) return 0;
   let r = rem || 0;
-  for (const ph of SHADE.slice(i + 1)) r += durs[ph];
+  for (const ph of phases.slice(i + 1)) r += durs[ph];
   return r + (N - m) * per + (N - m) * tp;
 }
 
@@ -31,6 +32,7 @@ export default function Banner({ status, session, receivedAt, nMarkers, onConfir
   const dtLocal = active ? Math.max(0, (now - receivedAt) / 1000) : 0;
   const t = status.t + dtLocal;
   const fase = status.fase;
+  const apnea = session.proto === "apnea";
   const seq = session.proto === "seq";
   const p = session.params;
   const N = status.total;
@@ -39,7 +41,7 @@ export default function Banner({ status, session, receivedAt, nMarkers, onConfir
   const error = !!status.error;
 
   let bg = phaseOf(fase).bg;
-  const top = seq ? (m ? `MEDICIÓN ${m}/${N}` : "") : "CAPTURA CONTINUA";
+  const top = apnea ? "APNEA + MONITOREO" : seq ? (m ? `MEDICIÓN ${m}/${N}` : "") : "CAPTURA CONTINUA";
   let text = fase === "FIN" ? status.estado : phaseOf(fase).label;
   let count = null;
   let remain = null;
@@ -48,7 +50,7 @@ export default function Banner({ status, session, receivedAt, nMarkers, onConfir
   if (fase === "PREP" && status.cuenta != null && active) count = String(status.cuenta);
   else if (["NORMAL", "PREP", "HOLD", "RECOVERY", "PAUSA"].includes(fase) && rem != null && active) {
     if (fase !== "PREP") remain = `${fmt(Math.ceil(rem - 1e-6))} s`;
-  } else if (fase === "CONTINUO" && active) {
+  } else if ((fase === "CONTINUO" || fase === "MONITOREO") && active) {
     const elapsed = (status.phase_elapsed_s ?? 0) + dtLocal;
     if (rem != null) remain = `Quedan ${mmss(Math.ceil(rem - 1e-6))}`;
     else {
@@ -92,8 +94,15 @@ export default function Banner({ status, session, receivedAt, nMarkers, onConfir
     progText = `${curDone} de ${N} completadas`;
     // Con error ya no hay tiempo restante que mostrar.
     if (!error) {
-      const remainAll = remainingTotal(status, p, N, rem);
+      const remainAll = remainingTotal(status, p, N, rem, session.proto);
       progText += ` · restante ${mmss(remainAll)}${p.esperar ? " más las esperas" : ""} · fin aprox. ${clock(new Date(Date.now() + remainAll * 1000))}`;
+    }
+  } else if (apnea && !error && active && !["FIN", "CONECTANDO"].includes(fase)) {
+    if (+p.tm > 0) {
+      const remainAll = remainingTotal(status, p, 1, rem, "apnea");
+      progText = `Restante ${mmss(remainAll)}${fase === "ESPERA" && p.esperar ? " más la espera" : ""} · fin aprox. ${clock(new Date(Date.now() + remainAll * 1000))}`;
+    } else {
+      progText = "Monitoreo sin duración fija";
     }
   }
 
@@ -167,7 +176,7 @@ export default function Banner({ status, session, receivedAt, nMarkers, onConfir
                 fontSize: "clamp(17px,2.7vh,24px)", padding: "clamp(8px,1.6vh,14px) 24px", borderRadius: "var(--bs-border-radius-lg)",
                 color: "var(--color-text)", animation: "pulseRingW 2.2s ease-out infinite", whiteSpace: "nowrap", lineHeight: 1.1,
               }}>
-              Estoy en posición — comenzar medición {m}
+              {apnea ? "Estoy en posición — comenzar" : `Estoy en posición — comenzar medición ${m}`}
             </button>
             <span style={{ fontSize: 12, opacity: 0.85 }}>o presiona Enter</span>
           </div>

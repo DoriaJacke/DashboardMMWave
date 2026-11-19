@@ -6,7 +6,7 @@ import { Modal } from "react-bootstrap";
 import AnalysisPage from "./components/AnalysisPage";
 import Banner from "./components/Banner";
 import ChartsCard from "./components/ChartsCard";
-import ConfigForm, { SEQ_FIELDS, baudError, durError, fieldError } from "./components/ConfigForm";
+import ConfigForm, { APNEA_FIELDS, SEQ_FIELDS, baudError, durError, fieldError } from "./components/ConfigForm";
 import DistanceCard from "./components/DistanceCard";
 import Header from "./components/Header";
 import Metrics from "./components/Metrics";
@@ -16,7 +16,7 @@ import Toasts, { useToasts } from "./components/Toasts";
 import { api } from "./lib/api";
 import { clock, clockAt, defaultFileName, finalFileName, fmt, mmss, sourceLabel, stampOf } from "./lib/format";
 import { EASE, useAnimateOnChange } from "./lib/hooks";
-import { AMBER, GREEN, INK, PH, RED } from "./lib/phases";
+import { AMBER, GREEN, INK, PH, RED, isSeqLike } from "./lib/phases";
 import { dataDomain, expandBW, liveWindow, segmentsFrom } from "./lib/series";
 import { useExport } from "./lib/useExport";
 import { useLive } from "./lib/useLive";
@@ -49,7 +49,7 @@ export default function App() {
 
   const s = live.session;
   const st = live.status;
-  const seq = s?.proto === "seq";
+  const seq = isSeqLike(s?.proto);
   const ended = !!st?.terminado;
   let screen = "config";
   if (s && st) screen = !ended || (st.error && !errAck[s.id] && !live.endedOnArrival) ? "live" : "result";
@@ -96,7 +96,7 @@ export default function App() {
     const prev = prevRef.current;
     prevRef.current = { id: s?.id ?? null, st };
     if (!s || !st) return;
-    const isSeq = s.proto === "seq";
+    const isSeq = isSeqLike(s.proto);
     const resetResult = () => {
       setRv({ ...RESULT_VIEW, med: isSeq ? "1" : "todas" });
       setResTab("charts");
@@ -116,7 +116,7 @@ export default function App() {
     };
     if (prev.id !== s.id) {
       // Adquisición nueva (o la que ya estaba al abrir la página).
-      setLv((v) => ({ ...v, x: "t", win: isSeq ? "med" : "60" }));
+      setLv((v) => ({ ...v, x: "t", win: s.proto === "apnea" ? "300" : isSeq ? "med" : "60" }));
       resetResult();
       // Si falló apenas empezó (por ejemplo, el puerto no abre), igual se avisa.
       if (st.terminado && !live.endedOnArrival) onEnd();
@@ -124,7 +124,8 @@ export default function App() {
     }
     const p = prev.st;
     if (!p) return;
-    if (isSeq && p.fase !== "NORMAL" && st.fase === "NORMAL") toast(`Medición ${st.medicion} iniciada`, GREEN);
+    if (s.proto === "seq" && p.fase !== "NORMAL" && st.fase === "NORMAL") toast(`Medición ${st.medicion} iniciada`, GREEN);
+    if (s.proto === "apnea" && p.fase === "HOLD" && st.fase === "MONITOREO") toast("Apnea terminada · comienza el monitoreo continuo", GREEN);
     if (isSeq && p.fase === "RECOVERY" && st.fase !== "RECOVERY" && !st.detenido && !st.error) {
       toast(`Medición ${p.medicion} de ${st.total} completada`, GREEN);
     }
@@ -138,8 +139,8 @@ export default function App() {
       setCfgErr({ field: "port", msg: "Selecciona un puerto serial." });
       return;
     }
-    const invalid =
-      cfg.proto === "seq" ? SEQ_FIELDS.some(([k, , a, b, int]) => fieldError(cfg[k], a, b, int)) : !!durError(cfg.duracion);
+    const fields = cfg.proto === "seq" ? SEQ_FIELDS : cfg.proto === "apnea" ? APNEA_FIELDS : null;
+    const invalid = fields ? fields.some(([k, , a, b, int]) => fieldError(cfg[k], a, b, int)) : !!durError(cfg.duracion);
     if (invalid || (cfg.src === "serial" && baudError(cfg.baud))) {
       setCfgErr({ field: "range", msg: "Revisa los campos marcados." });
       return;
@@ -237,7 +238,9 @@ export default function App() {
 
   const chartTitle = !s || !st
     ? ""
-    : screen === "live"
+    : s.proto === "apnea"
+      ? "Apnea + monitoreo — MR60BHA1"
+      : screen === "live"
       ? seq ? `Medición ${st.medicion || 1} — MR60BHA1` : "Captura continua — MR60BHA1"
       : seq ? (rv.med === "todas" ? "Todas las mediciones — MR60BHA1" : `Medición ${rv.med} — MR60BHA1`) : "Captura continua — MR60BHA1";
 
@@ -269,7 +272,9 @@ export default function App() {
           k: "Protocolo",
           v: cfg.proto === "seq"
             ? `Secuencia · ${cfg.n} mediciones · ${cfg.tn}/${cfg.th}/${cfg.tr} s${cfg.esperar ? " · con confirmación" : ""}`
-            : `Continua · ${+cfg.duracion ? mmss(+cfg.duracion) : "hasta detener"}`,
+            : cfg.proto === "apnea"
+              ? `Apnea + monitoreo · basal ${cfg.a_tn} s · apnea ${cfg.a_th} s · monitoreo ${+cfg.a_tm ? mmss(+cfg.a_tm) : "hasta detener"}${cfg.esperar ? " · con confirmación" : ""}`
+              : `Continua · ${+cfg.duracion ? mmss(+cfg.duracion) : "hasta detener"}`,
         },
         { k: "Archivo", v: finalFileName(file, cfg.proto, stamp) },
       ]

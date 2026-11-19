@@ -1,7 +1,7 @@
 // Convierte los registros que envía el backend ({t, m, f, k, v}) en las series
 // de los gráficos y en los intervalos de fase para el sombreado.
 
-import { SHADE, perMeasurement, plannedDurations } from "./phases";
+import { SHADE, isSeqLike, phaseSeq, plannedDurations } from "./phases";
 
 export function emptyStore() {
   return { hr: [], br: [], bwFrames: [], phaseMarks: [], markers: [], dist: [], nEnd: 0, nRecords: 0 };
@@ -76,7 +76,7 @@ export function segmentsFrom(phaseMarks, tEnd) {
  * Dominio, fases y filtro de la ventana en vivo.
  *  - "med": toda la duración planificada de la medición actual; las fases que
  *    faltan se dibujan atenuadas (planificadas desde el fin previsto de la actual).
- *  - "60": últimos 60 s.  - "todo": desde el inicio.
+ *  - "60": últimos 60 s.  - "300": últimos 5 min.  - "todo": desde el inicio.
  */
 export function liveWindow({ win, status, params, proto, segs }) {
   const t = status.t;
@@ -93,37 +93,45 @@ export function liveWindow({ win, status, params, proto, segs }) {
         : s,
     );
 
-  if (proto === "seq" && win === "med") {
+  if (isSeqLike(proto) && win === "med") {
+    const phases = phaseSeq(proto, params);
     const durs = plannedDurations(params);
-    const per = perMeasurement(params);
-    const mine = closeOpen(segs.filter((s) => s.m === m && SHADE.includes(s.ph)));
+    // Un monitoreo sin duración fija se dibuja con 60 s planificados y crece con el tiempo.
+    const dur = (ph) => durs[ph] || 60;
+    const per = phases.reduce((sum, ph) => sum + dur(ph), 0);
+    const mine = closeOpen(segs.filter((s) => s.m === m && phases.includes(s.ph)));
     let shade;
     let s0;
     if (mine.length) {
       s0 = mine[0].t0;
       shade = [...mine];
-      const cur = SHADE.indexOf(fase);
+      const cur = phases.indexOf(fase);
       if (cur >= 0 && shade[shade.length - 1].ph === fase) {
         let x = shade[shade.length - 1].t1;
-        for (const ph of SHADE.slice(cur + 1)) {
-          shade.push({ ph, m, t0: x, t1: x + durs[ph], planned: true });
-          x += durs[ph];
+        for (const ph of phases.slice(cur + 1)) {
+          shade.push({ ph, m, t0: x, t1: x + dur(ph), planned: true });
+          x += dur(ph);
         }
       }
     } else {
       s0 = t;
       let x = t;
-      shade = SHADE.map((ph) => {
-        const r = { ph, m, t0: x, t1: x + durs[ph], planned: true };
-        x += durs[ph];
+      shade = phases.map((ph) => {
+        const r = { ph, m, t0: x, t1: x + dur(ph), planned: true };
+        x += dur(ph);
         return r;
       });
-      if (fase === "ESPERA") result.emptyMsg = `La medición ${m} se graba al confirmar la posición.`;
+      if (fase === "ESPERA") result.emptyMsg = proto === "apnea" ? "La maniobra se graba al confirmar la posición." : `La medición ${m} se graba al confirmar la posición.`;
     }
-    const end = Math.max(s0 + per, shade.length ? shade[shade.length - 1].t1 : 0);
+    const end = Math.max(s0 + per, shade.length ? shade[shade.length - 1].t1 : 0, t);
     Object.assign(result, { dom: [s0, end], segs: shade, filter: (p) => p.m === m });
   } else if (win === "60") {
     result.dom = [t - 60, t];
+    result.segs = closeOpen(segs);
+  } else if (win === "300") {
+    // Hasta completar 5 min se ve desde el inicio de lo grabado; después, los últimos 5 min.
+    const lo = segs.length ? segs[0].t0 : 0;
+    result.dom = t - lo < 300 ? [lo, lo + 300] : [t - 300, t];
     result.segs = closeOpen(segs);
   } else {
     result.segs = closeOpen(segs);

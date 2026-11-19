@@ -13,6 +13,19 @@ export const SEQ_FIELDS = [
   ["tp", "Pausa entre mediciones (s)", 0, 60, false],
 ];
 
+export const APNEA_FIELDS = [
+  ["a_tn", "Respiración basal (s)", 0, 600, false],
+  ["a_cd", "Cuenta regresiva (s)", 0, 10, true],
+  ["a_th", "Apnea (s)", 1, 120, false],
+  ["a_tm", "Monitoreo (s, 0 = hasta detener)", 0, 36000, false],
+];
+
+const PROTOS = [
+  ["seq", "Secuencia con retención"],
+  ["apnea", "Apnea + monitoreo"],
+  ["cont", "Captura continua"],
+];
+
 const RED = "oklch(0.48 0.15 27)";
 const kicker = { fontSize: 11, letterSpacing: ".1em", textTransform: "uppercase", color: "var(--color-accent-700)" };
 const card = { boxShadow: "var(--shadow-sm)", background: "#fff", padding: 18, gap: 14 };
@@ -31,9 +44,11 @@ export const baudError = (v) => (v === "" || !(Number(v) > 0) || !Number.isInteg
 
 export default function ConfigForm({ cfg, setCfg, ports, scannedAt, onRefreshPorts, fileValue, setFile, onStart, error, starting }) {
   const seq = cfg.proto === "seq";
+  const apnea = cfg.proto === "apnea";
   const hasPorts = ports.length > 0;
   const N = +cfg.n || 0;
   const total = N * (+cfg.tn + 1 + +cfg.cd + +cfg.th + +cfg.tr) + Math.max(0, N - 1) * +cfg.tp;
+  const apneaPre = +cfg.a_tn + 1 + +cfg.a_cd + +cfg.a_th;
   const dErr = durError(cfg.duracion);
   const bErr = cfg.src === "serial" ? baudError(cfg.baud) : null;
   const portErr = error?.field === "port";
@@ -93,17 +108,46 @@ export default function ConfigForm({ cfg, setCfg, ports, scannedAt, onRefreshPor
 
         <div className="card border-0" style={card}>
           <div style={kicker}>Protocolo</div>
-          <div role="radiogroup" aria-label="Protocolo" style={{ display: "flex", gap: 24 }}>
-            <label className="form-check d-flex align-items-center gap-2 mb-0" style={{ cursor: "pointer", paddingLeft: 0 }}>
-              <input className="form-check-input m-0" type="radio" name="proto" checked={seq} onChange={() => setCfg({ proto: "seq" })} />
-              Secuencia con retención
-            </label>
-            <label className="form-check d-flex align-items-center gap-2 mb-0" style={{ cursor: "pointer", paddingLeft: 0 }}>
-              <input className="form-check-input m-0" type="radio" name="proto" checked={!seq} onChange={() => setCfg({ proto: "cont" })} />
-              Captura continua
-            </label>
+          <div role="radiogroup" aria-label="Protocolo" style={{ display: "flex", gap: "8px 24px", flexWrap: "wrap" }}>
+            {PROTOS.map(([value, label]) => (
+              <label key={value} className="form-check d-flex align-items-center gap-2 mb-0" style={{ cursor: "pointer", paddingLeft: 0 }}>
+                <input className="form-check-input m-0" type="radio" name="proto" checked={cfg.proto === value} onChange={() => setCfg({ proto: value })} />
+                {label}
+              </label>
+            ))}
           </div>
-          {seq ? (
+          {apnea ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(2,minmax(0,1fr))", gap: "12px 14px" }}>
+                {APNEA_FIELDS.map(([k, label, min, max, integer]) => {
+                  const err = fieldError(cfg[k], min, max, integer);
+                  return (
+                    <div className="field" key={k}>
+                      <label htmlFor={`cfg-${k}`}>{label}</label>
+                      <input id={`cfg-${k}`} className="form-control" type="number" min={min} max={max} value={cfg[k]} onChange={(e) => setCfg({ [k]: e.target.value })}
+                        aria-invalid={!!err} style={{ borderColor: err ? RED : "var(--color-divider)", fontVariantNumeric: "tabular-nums" }} />
+                      <div style={{ fontSize: 12, color: err ? "oklch(0.42 0.13 27)" : "var(--color-neutral-600)", marginTop: 3 }}>{err || `Rango ${min}–${max}`}</div>
+                    </div>
+                  );
+                })}
+              </div>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14, cursor: "pointer" }}>
+                <input className="form-check-input m-0" type="checkbox" checked={!!cfg.esperar} onChange={(e) => setCfg({ esperar: e.target.checked })} />
+                Esperar confirmación antes de comenzar
+              </label>
+              <div style={{ fontSize: 13, color: "var(--color-neutral-700)" }}>
+                {+cfg.a_tn > 0 ? "Respiración basal, cuenta regresiva" : "Cuenta regresiva"}, apnea y luego monitoreo continuo
+                {+cfg.a_tm > 0
+                  ? ` · duración estimada ${mmss(Number.isFinite(apneaPre + +cfg.a_tm) ? apneaPre + +cfg.a_tm : 0)}`
+                  : ` · el monitoreo sigue hasta presionar «Detener adquisición» (empieza a los ${mmss(Number.isFinite(apneaPre) ? apneaPre : 0)})`}
+                {cfg.esperar ? ", más la espera de confirmación." : "."}
+              </div>
+              <div className="alert mb-0 border-0" style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "10px 12px", background: "var(--color-accent-100)", color: "var(--color-accent-800)", fontSize: 14 }}>
+                <Info size={18} strokeWidth={1.5} style={{ flex: "none", marginTop: 1 }} />
+                Durante la apnea realiza solamente un aguante voluntario y cómodo. No fuerces la respiración.
+              </div>
+            </div>
+          ) : seq ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(3,minmax(0,1fr))", gap: "12px 14px" }}>
                 {SEQ_FIELDS.map(([k, label, min, max, integer]) => {

@@ -1,7 +1,7 @@
 // Resumen por fase (solo archivos de secuencia): media ± DE y n de HR, BR y distancia.
 
 import { fmt } from "../lib/format";
-import { PH, SHADE } from "../lib/phases";
+import { PH, SHADE, isSeqLike } from "../lib/phases";
 
 const right = { textAlign: "right" };
 const n = { textAlign: "right", color: "var(--color-neutral-700)" };
@@ -14,7 +14,7 @@ function stat(s, unit = "", d = 1) {
 
 export default function SummaryTable({ proto, rows, loading, error, unit }) {
   let body;
-  if (proto !== "seq") {
+  if (!isSeqLike(proto)) {
     body = (
       <tr>
         <td colSpan={8} style={{ color: "var(--color-neutral-700)" }}>Disponible solo para archivos de secuencia</td>

@@ -39,6 +39,7 @@ from .acquisition import (
     WAVE_COLS,
     AcquisitionManager,
     AcquisitionSession,
+    ApneaProtocol,
     ContinuousProtocol,
     RetentionProtocol,
     SerialSource,
@@ -55,6 +56,16 @@ FRONTEND_DIST = ROOT / "frontend" / "dist"
 
 STATUS_EVERY_S = 1.0   # envío periódico del estado
 POLL_S = 0.1           # cada cuánto se revisa si hay datos nuevos o cambió la fase
+
+class FrontendFiles(StaticFiles):
+    """Archivos de frontend/dist. index.html se revalida siempre para tomar cada compilación nueva."""
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        if response.media_type == "text/html":
+            response.headers["Cache-Control"] = "no-cache"
+        return response
+
 
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 ANALYSIS_CACHE_SIZE = 4  # archivos abiertos en Análisis que se conservan para exportar
@@ -296,6 +307,14 @@ def create_app(data_dir: Optional[Path] = None) -> FastAPI:
                 esperar_usuario=bool(cfg["esperar"]),
             )
             params = {k: cfg[k] for k in ("n", "tn", "th", "tr", "cd", "tp", "esperar")}
+        elif cfg["proto"] == "apnea":
+            protocol = ApneaProtocol(
+                t_normal=float(cfg["a_tn"]), t_countdown=int(cfg["a_cd"]), t_hold=float(cfg["a_th"]),
+                t_monitor=float(cfg["a_tm"]) or None, esperar_usuario=bool(cfg["esperar"]),
+            )
+            # Mismas claves que la secuencia para que la interfaz planifique las fases igual.
+            params = {"n": 1, "tn": cfg["a_tn"], "cd": cfg["a_cd"], "th": cfg["a_th"], "tm": cfg["a_tm"],
+                      "esperar": cfg["esperar"]}
         else:
             protocol = ContinuousProtocol(duracion=float(cfg["duracion"]) or None)
             params = {"duracion": cfg["duracion"]}
@@ -393,11 +412,12 @@ def create_app(data_dir: Optional[Path] = None) -> FastAPI:
         seq = fmt == FORMATO_SECUENCIA
         mediciones = sorted({r["m"] for r in records if r["m"] is not None})
         t_values = [r["t"] for r in records]
+        apnea = seq and any(r["k"] == "PHASE" and r["f"] == "MONITOREO" for r in records)
         return {
             "key": key,
             "file": name,
             "origin": origin,
-            "proto": "seq" if seq else "cont",
+            "proto": "apnea" if apnea else "seq" if seq else "cont",
             "n_rows": int(len(raw)),
             "mediciones": mediciones if seq else [],
             "n_end": sum(1 for r in records if r["k"] == "END"),
@@ -558,7 +578,7 @@ def create_app(data_dir: Optional[Path] = None) -> FastAPI:
     # --------------------------------------------------------
 
     if FRONTEND_DIST.is_dir():
-        app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")
+        app.mount("/", FrontendFiles(directory=FRONTEND_DIST, html=True), name="frontend")
     else:
         @app.get("/", response_class=HTMLResponse)
         def no_frontend():

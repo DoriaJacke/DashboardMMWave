@@ -5,7 +5,7 @@ import { Radio, Square } from "lucide-react";
 import { useNow } from "../lib/hooks";
 import { liveT } from "../lib/useLive";
 import { fmt, mmss } from "../lib/format";
-import { phaseOf } from "../lib/phases";
+import { PROTO_NAMES, isSeqLike, phaseOf } from "../lib/phases";
 
 const tabStyle = (on) => ({
   fontFamily: "var(--font-heading)", fontSize: 16, padding: "0 14px", background: "transparent", border: 0,
@@ -16,9 +16,13 @@ const tabStyle = (on) => ({
 /** Texto corto del avance: "Medición 3/20 · 12 s" o "Quedan 04:10". */
 export function indicatorDetail(live) {
   const st = live.status;
-  const seq = live.session.proto === "seq";
+  const proto = live.session.proto;
+  const seq = isSeqLike(proto);
   const dtLocal = Math.max(0, (performance.now() - live.receivedAt) / 1000);
   const rem = st.remaining_s != null ? Math.max(0, st.remaining_s - dtLocal) : null;
+  if (proto === "apnea" && st.medicion) {
+    return `${phaseOf(st.fase).name}${rem != null ? ` · ${st.fase === "MONITOREO" ? mmss(rem) : `${fmt(Math.ceil(rem - 1e-6))} s`}` : ""}`;
+  }
   if (seq && st.medicion) return `Medición ${st.medicion}/${st.total}${rem != null ? ` · ${fmt(Math.ceil(rem - 1e-6))} s` : ""}`;
   if (seq) return "Conectando";
   return rem != null ? `Quedan ${mmss(rem)}` : "Sin duración fija";
@@ -57,7 +61,7 @@ export default function Header({ tab, setTab, live, liveActive, screen, onStop, 
       {showLiveInfo && (
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 16, fontSize: 13, minWidth: 0 }}>
           <span style={{ fontFamily: "var(--font-heading)", fontWeight: 600, fontSize: 17, whiteSpace: "nowrap" }}>
-            {s.proto === "seq" ? "Secuencia con retención" : "Captura continua"}
+            {PROTO_NAMES[s.proto]}
           </span>
           <span style={{ color: "var(--color-neutral-700)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }} title={s.path}>
             <span style={{ fontFamily: "ui-monospace,monospace", fontSize: 12, color: "var(--color-text)" }}>{s.path}</span>
