@@ -1,0 +1,10 @@
+# Python
+__pycache__/
+*.pyc
+
+# Frontend (se generan con npm install / npm run build)
+frontend/node_modules/
+frontend/dist/
+
+# Configuración local del dashboard (última configuración usada)
+datos/.dashboard_config.json

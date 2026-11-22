@@ -9,11 +9,12 @@
 from __future__ import annotations
 
 import io
+from typing import Optional
 
 import numpy as np
 import pandas as pd
 
-from acquisition import WAVE_COLS, parse_record
+from .acquisition import WAVE_COLS, parse_record
 
 FORMATO_SECUENCIA = "secuencia"
 FORMATO_CONTINUO = "continuo"
@@ -43,7 +44,8 @@ def sequence_to_long(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
     ts = pd.to_datetime(out["timestamp"], errors="coerce")
     out["t"] = (ts - ts.min()).dt.total_seconds()
-    out["evento"] = np.where(out["tipo"] == "EVENT", out["valor_1"].astype(str), None)
+    # EVENT trae el estado y MARK la etiqueta de la marca (M1, M2…) en valor_1.
+    out["evento"] = np.where(out["tipo"].isin(["EVENT", "MARK"]), out["valor_1"].astype(str), None)
     for col in WAVE_COLS:
         out[col] = pd.to_numeric(out[col], errors="coerce")
     out["medicion"] = pd.to_numeric(out["medicion"], errors="coerce").astype("Int64")
@@ -51,7 +53,11 @@ def sequence_to_long(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def continuous_to_long(df: pd.DataFrame) -> pd.DataFrame:
-    """El formato continuo guarda la línea original en 'raw'; se re-interpreta."""
+    """
+    El formato continuo guarda la línea original en 'raw'; se re-interpreta.
+    Las marcas del operador vienen como raw = "MARK,M1" (columna 'marker',
+    opcional para que los CSV antiguos sigan funcionando).
+    """
     t = pd.to_numeric(df["timestamp"], errors="coerce").to_numpy()
     records = []
     for ti, raw in zip(t, df["raw"].astype(str)):
@@ -60,6 +66,22 @@ def continuous_to_long(df: pd.DataFrame) -> pd.DataFrame:
         if record is not None:
             records.append(record)
     return records_to_long(records)
+
+
+def start_wall(raw: pd.DataFrame, fmt: str) -> Optional[str]:
+    """Hora del PC que corresponde a t = 0 (ISO), o None si el archivo no la trae."""
+    if fmt == FORMATO_SECUENCIA:
+        start = pd.to_datetime(raw["timestamp"], errors="coerce").min()
+    else:
+        if "datetime" not in raw.columns:
+            return None
+        wall = pd.to_datetime(raw["datetime"], errors="coerce")
+        t = pd.to_numeric(raw["timestamp"], errors="coerce")
+        valid = wall.notna() & t.notna()
+        if not valid.any():
+            return None
+        start = wall[valid].iloc[0] - pd.to_timedelta(t[valid].iloc[0], unit="s")
+    return None if pd.isna(start) else start.isoformat(timespec="milliseconds")
 
 
 def load_csv(data: bytes) -> tuple[str, pd.DataFrame, pd.DataFrame]:

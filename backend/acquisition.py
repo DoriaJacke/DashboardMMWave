@@ -2,9 +2,10 @@
 # ADQUISICIÓN MR60BHA1
 #
 # Fuentes de datos (puerto serial ESP32 o simulador), sesión de
-# adquisición en segundo plano y los dos protocolos de toma de datos:
+# adquisición en segundo plano y los protocolos de toma de datos:
 #
 #   RetentionProtocol  -> basado en MEDICION20SEQRES.py
+#   ApneaProtocol      -> una apnea y luego monitoreo continuo
 #   ContinuousProtocol -> basado en tomadatosSEPT.py
 # ============================================================
 
@@ -15,7 +16,6 @@ import math
 import random
 import threading
 import time
-from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -40,6 +40,17 @@ def to_float(value: str) -> Optional[float]:
 
 def list_serial_ports() -> list[str]:
     return [p.device for p in list_ports.comports()]
+
+
+def list_serial_ports_info() -> list[dict]:
+    """Puertos detectados con su descripción (por ejemplo, el chip USB-serial)."""
+    ports = []
+    for p in sorted(list_ports.comports(), key=lambda p: p.device):
+        description = (p.description or "").replace(f"({p.device})", "").strip()
+        if description in ("", "n/a", p.device):
+            description = ""
+        ports.append({"device": p.device, "description": description})
+    return ports
 
 
 # ============================================================
@@ -81,7 +92,7 @@ class SimulatedSource:
         self._hold = False
         self._hr = 72.0
         self._br = 15.0
-        self._dist = 55.0
+        self._dist = 0.55  # m, como el MR60BHA1
         self._wave_phase = 0.0
 
     def set_hold(self, hold: bool) -> None:
@@ -120,8 +131,8 @@ class SimulatedSource:
             self._br = max(self._br, 0.0)
             return f"BR,{self._br:.0f}"
         if kind == "DIST":
-            self._dist += 0.1 * (55.0 - self._dist) + random.gauss(0, 1.0)
-            return f"DIST,{self._dist:.1f}"
+            self._dist += 0.1 * (0.55 - self._dist) + random.gauss(0, 0.01)
+            return f"DIST,{self._dist:.2f}"
         return "EVENT," + random.choice(["QUIETO", "QUIETO", "QUIETO", "MOVIMIENTO"])
 
     def close(self) -> None:
@@ -149,6 +160,7 @@ class Status:
     fase: str = ""
     medicion: int = 0
     total: int = 0
+    fase_inicio: Optional[float] = None
     fase_fin: Optional[float] = None
     cuenta: Optional[int] = None
     esperando_usuario: bool = False
@@ -164,26 +176,41 @@ class AcquisitionSession:
     en el CSV (formato del protocolo) y se guarda en memoria para graficar.
     """
 
-    def __init__(self, source_factory: Callable[[], object], protocol, output_path: str | Path):
+    def __init__(
+        self,
+        source_factory: Callable[[], object],
+        protocol,
+        output_path: str | Path,
+        source_label: str = "la fuente de datos",
+    ):
         self.protocol = protocol
         self.output_path = Path(output_path)
         self._source_factory = source_factory
+        self.source_label = source_label
         self.source = None
 
         self.lock = threading.Lock()
         self.ctx = Context()
         self.status = Status(total=protocol.n_mediciones)
         self.records: list[dict] = []
+        # Marcas del operador ({label, t, medicion, fase}); la numeración es por sesión.
+        self.markers: list[dict] = []
         self.latest: dict = {"HR": None, "BR": None, "DIST": None, "EVENT": None}
         self.latest_t: dict = {}
-        self.dist_history: deque[tuple[float, float]] = deque(maxlen=5000)
-        self.n_lines = 0
-        self.n_saved = 0
+        # (t, distancia) de todas las líneas DIST, también las de fases que no se graban.
+        self.dist_history: list[tuple[float, float]] = []
+        self.n_lines = 0         # líneas recibidas del sensor
+        self.n_lines_saved = 0   # de esas líneas, las que se guardaron en el CSV
+        self.n_saved = 0         # filas del CSV (también incluye PHASE, END y MARK)
 
         self.stop_event = threading.Event()
         self.user_ready = threading.Event()
         self.t0 = time.monotonic()
         self.started_at = datetime.now()
+        # Hora del PC que corresponde a t = 0 (se fija al abrir la fuente).
+        self.t0_wall = self.started_at
+        # Segundos desde t0 en que terminó la adquisición.
+        self.t_end: Optional[float] = None
 
         self._file = None
         self._writer = None
@@ -210,7 +237,10 @@ class AcquisitionSession:
     def _main(self) -> None:
         reader = None
         try:
-            self.source = self._source_factory()
+            try:
+                self.source = self._source_factory()
+            except Exception as exc:
+                raise RuntimeError(f"No se pudo abrir {self.source_label}: {exc}") from exc
             self.output_path.parent.mkdir(parents=True, exist_ok=True)
             self._file = open(self.output_path, "w", newline="", encoding="utf-8")
             self._writer = csv.writer(self._file)
@@ -218,6 +248,7 @@ class AcquisitionSession:
             self._file.flush()
 
             self.t0 = time.monotonic()
+            self.t0_wall = datetime.now()
             reader = threading.Thread(target=self._reader_loop, daemon=True)
             reader.start()
 
@@ -240,6 +271,7 @@ class AcquisitionSession:
             if self.status.detenido:
                 self.set_status(estado="ADQUISICIÓN DETENIDA MANUALMENTE", fase="FIN", fase_fin=None)
             self.status.esperando_usuario = False
+            self.t_end = time.monotonic() - self.t0
             self.status.terminado = True
 
     # --------------------------------------------------------
@@ -273,6 +305,7 @@ class AcquisitionSession:
             row = self.protocol.format_line(line, parts, ctx, self)
             if row is not None:
                 self._write(row)
+                self.n_lines_saved += 1
 
             record = parse_record(tipo, parts, t, ctx.medicion, ctx.fase)
             if record is not None:
@@ -283,6 +316,7 @@ class AcquisitionSession:
             return
         if tipo == "EVENT":
             self.latest["EVENT"] = parts[1]
+            self.latest_t["EVENT"] = t
         elif tipo in ("HR", "BR", "DIST"):
             value = to_float(parts[1])
             if value is not None:
@@ -301,6 +335,9 @@ class AcquisitionSession:
     # --------------------------------------------------------
 
     def set_status(self, **kwargs) -> None:
+        # Cada vez que se indica la fase, empieza a contar su tiempo transcurrido.
+        if "fase" in kwargs and "fase_inicio" not in kwargs:
+            kwargs["fase_inicio"] = time.monotonic()
         for key, value in kwargs.items():
             setattr(self.status, key, value)
 
@@ -354,18 +391,42 @@ class AcquisitionSession:
         if self.source is not None:
             self.source.set_hold(False)
 
+    def add_marker(self) -> Optional[dict]:
+        """
+        Marca un punto de interés en el instante actual y lo escribe en el CSV.
+        Solo se acepta durante las fases que se graban; si no, devuelve None.
+        """
+        t = time.monotonic() - self.t0
+        with self.lock:
+            ctx = self.ctx
+            if (not ctx.recording or self.stop_event.is_set()
+                    or self._file is None or self._file.closed):
+                return None
+            label = f"M{len(self.markers) + 1}"
+            row = self.protocol.marker_row(label, ctx, self)
+            if row is not None:
+                self._write(row)
+            marker = {"label": label, "t": t, "medicion": ctx.medicion, "fase": ctx.fase}
+            self.markers.append(marker)
+            record = _mark_record("MARK", t, ctx.medicion, ctx.fase)
+            record["evento"] = label
+            self.records.append(record)
+        return marker
+
     def snapshot(self) -> tuple[list[dict], dict]:
         with self.lock:
             return list(self.records), dict(self.latest)
 
-    def distance_snapshot(self) -> tuple[Optional[float], Optional[float], list[tuple[float, float]]]:
-        """(última distancia, segundos desde que llegó, historial (t, distancia))."""
+    def elapsed(self) -> float:
+        """Segundos desde t0 (fijo al terminar la adquisición)."""
+        if self.t_end is not None:
+            return self.t_end
+        return time.monotonic() - self.t0
+
+    def data_since(self, n_records: int, n_dist: int) -> tuple[list[dict], list[tuple[float, float]]]:
+        """Registros y distancias nuevos desde los índices indicados (para enviar en vivo)."""
         with self.lock:
-            history = list(self.dist_history)
-            t_last = self.latest_t.get("DIST")
-        now = time.monotonic() - self.t0
-        age = None if t_last is None else now - t_last
-        return self.latest["DIST"], age, [(t - now, d) for t, d in history]
+            return self.records[n_records:], self.dist_history[n_dist:]
 
 
 def parse_record(tipo: str, parts: list[str], t: float, medicion, fase) -> Optional[dict]:
@@ -383,7 +444,7 @@ def parse_record(tipo: str, parts: list[str], t: float, medicion, fase) -> Optio
         if len(parts) < 2:
             return None
         record["valor_1"] = to_float(parts[1])
-    elif tipo == "EVENT":
+    elif tipo in ("EVENT", "MARK"):
         if len(parts) < 2:
             return None
         record["evento"] = parts[1]
@@ -438,6 +499,10 @@ class RetentionProtocol:
     def end_row(self, medicion) -> list:
         return [now_iso(), medicion, "END", "FIN", 0, "END", "", "", "", "", ""]
 
+    def marker_row(self, label: str, ctx: Context, session) -> list:
+        # Marca del operador: tipo MARK y la etiqueta (M1, M2…) en valor_1.
+        return self._base(ctx) + ["MARK", label, "", "", "", ""]
+
     def run(self, s: AcquisitionSession) -> None:
         for m in range(1, self.n_mediciones + 1):
 
@@ -477,6 +542,56 @@ class RetentionProtocol:
 
 
 # ============================================================
+# PROTOCOLO 3: APNEA + MONITOREO CONTINUO
+# ============================================================
+
+@dataclass
+class ApneaProtocol(RetentionProtocol):
+    """
+    Una maniobra de apnea seguida de monitoreo continuo:
+    ESPERA -> NORMAL (basal, opcional) -> PREP -> HOLD -> MONITOREO.
+    Guarda el mismo CSV largo que la secuencia (medición 1).
+    """
+    t_monitor: Optional[float] = None   # None = hasta detener
+    n_mediciones: int = 1
+    nombre: str = "Apnea + monitoreo continuo"
+
+    def run(self, s: AcquisitionSession) -> None:
+        m = 1
+        s.pause_recording(m, "ESPERA")
+        s.set_status(estado="COLÓCATE EN POSICIÓN", fase="ESPERA", medicion=m, fase_fin=None)
+        if self.esperar_usuario and not s.wait_user():
+            return
+
+        if self.t_normal > 0 and not s.run_phase(m, "NORMAL", "RESPIRACION_NORMAL", 0,
+                                                 "RESPIRACIÓN NORMAL", self.t_normal):
+            return
+
+        s.start_phase(m, "PREP", "PREPARACION", 0, "PREPÁRATE", 1 + self.t_countdown)
+        if not s.wait(1):
+            return
+        for cuenta in range(self.t_countdown, 0, -1):
+            s.set_status(cuenta=cuenta)
+            if not s.wait(1):
+                return
+        s.set_status(cuenta=None)
+
+        if not s.run_phase(m, "HOLD", "APNEA", 1, "AGUANTA LA RESPIRACIÓN", self.t_hold):
+            return
+
+        s.start_phase(m, "MONITOREO", "MONITOREO_CONTINUO", 0, "MONITOREO CONTINUO", self.t_monitor)
+        if self.t_monitor:
+            if not s.wait(self.t_monitor):
+                return
+        else:
+            # Sin duración: «Detener adquisición» es el fin normal del monitoreo.
+            s.stop_event.wait()
+            s.status.detenido = False
+        s.end_measurement(m)
+        s.set_status(estado="ADQUISICIÓN COMPLETADA", fase="FIN", fase_fin=None)
+
+
+# ============================================================
 # PROTOCOLO 2: CAPTURA CONTINUA (tomadatosSEPT.py)
 # ============================================================
 
@@ -487,10 +602,17 @@ class ContinuousProtocol:
     n_mediciones: int = 0
     nombre: str = "Captura continua"
     columns: list[str] = field(default_factory=lambda: [
-        "timestamp", "datetime", "HR", "BR", "distance", "movement", "raw",
+        "timestamp", "datetime", "HR", "BR", "distance", "movement", "raw", "marker",
     ])
 
     def format_line(self, line, parts, ctx, session) -> list:
+        return self._row(line, "", session)
+
+    def marker_row(self, label: str, ctx: Context, session) -> list:
+        # Marca del operador: raw = "MARK,M1" y la etiqueta en la columna marker.
+        return self._row(f"MARK,{label}", label, session)
+
+    def _row(self, raw: str, marker: str, session) -> list:
         latest = session.latest
         return [
             f"{time.monotonic() - session.t0:.3f}",
@@ -499,7 +621,8 @@ class ContinuousProtocol:
             latest["BR"],
             latest["DIST"],
             latest["EVENT"],
-            line,
+            raw,
+            marker,
         ]
 
     def phase_row(self, ctx: Context) -> None:
@@ -528,9 +651,9 @@ class AcquisitionManager:
     def busy(self) -> bool:
         return self.session is not None and self.session.running
 
-    def start(self, source_factory, protocol, output_path) -> AcquisitionSession:
+    def start(self, source_factory, protocol, output_path, source_label="la fuente de datos") -> AcquisitionSession:
         if self.busy:
             raise RuntimeError("Ya hay una adquisición en curso.")
-        self.session = AcquisitionSession(source_factory, protocol, output_path)
+        self.session = AcquisitionSession(source_factory, protocol, output_path, source_label)
         self.session.start()
         return self.session
