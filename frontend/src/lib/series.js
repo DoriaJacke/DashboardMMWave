@@ -4,11 +4,20 @@
 import { SHADE, isSeqLike, phaseSeq, plannedDurations } from "./phases";
 
 export function emptyStore() {
-  return { hr: [], br: [], bwFrames: [], phaseMarks: [], markers: [], dist: [], nEnd: 0, nRecords: 0 };
+  return { hr: [], br: [], bwFrames: [], phaseMarks: [], markers: [], dist: [], cmae: {}, nEnd: 0, nRecords: 0 };
 }
 
-/** Agrega registros nuevos al almacén (se llama con el historial y con cada incremento). */
-export function ingest(store, records, dist) {
+/**
+ * Agrega registros nuevos al almacén (se llama con el historial y con cada incremento).
+ * cmae: muestras de la placa CMAE ya en la escala de tiempo de la adquisición,
+ * {señal: [[t...], [v...]]} (backend/cmae/sincronia.py). Quedan en store.cmae[señal] como {t, v}.
+ */
+export function ingest(store, records, dist, cmae) {
+  for (const [key, pair] of Object.entries(cmae || {})) {
+    const list = store.cmae[key] || (store.cmae[key] = []);
+    const [ts, vs] = pair;
+    for (let i = 0; i < ts.length; i++) list.push({ t: ts[i], v: vs[i] });
+  }
   for (const r of records || []) {
     store.nRecords++;
     switch (r.k) {

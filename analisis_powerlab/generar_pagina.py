@@ -1,0 +1,616 @@
+"""Genera index.html del dashboard (una pestaña por par) y su documento {text} para el store."""
+import json
+from pathlib import Path
+
+AQUI = Path(__file__).resolve().parent
+D = AQUI / "resultados" / "dashboard"
+resumen = {r["par"]: r for r in json.loads((D / "resumen.json").read_text(encoding="utf-8"))["rows"]}
+fases = json.loads((D / "fases.json").read_text(encoding="utf-8"))
+con_fases = {f["par"] for f in fases}
+
+
+def c(par, field, dec=None, src="resumen", key="par"):
+    d = f' data-dec="{dec}"' if dec is not None else ""
+    return (f'<span class="cx-num" data-draw="cifra" data-source="{src}" data-field="{field}" '
+            f'data-where="{key}={par}"{d}>—</span>')
+
+
+HALLAZGOS = {
+    "par1": f"""Ventana corta: solo {c('par1','duracion_s',0)} s en común (respiración normal, preparación,
+      10 s de retención y recuperación). El sensor de pulso no registró señal en este bloque, así que no hay
+      referencia de FC. En FR el radar se desvió en promedio {c('par1','fr_mae')} rpm, con un sesgo de
+      {c('par1','fr_sesgo')} rpm: tiende a marcar menos respiraciones que el PowerLab.""",
+    "par2": f"""El canal 4 del PowerLab marcó más del doble de la FR que muestra la onda respiratoria, así que la FR
+      se compara contra la onda. Contra ella el radar se desvió {c('par2','fr_mae')} rpm. En FC el error medio fue
+      {c('par2','fc_mae')} lpm, con un sesgo de {c('par2','fc_sesgo')} lpm y r = {c('par2','fc_r',2)}: el radar marca
+      algo menos que el PowerLab y no sigue sus variaciones.""",
+    "par3": f"""El CMAE confirma que la referencia del PowerLab es buena: su ECG coincide con el canal 3
+      (error medio {c('par3-FC-ecg_vs_pl','mae',1,'metricas','clave')} lpm, r = {c('par3-FC-ecg_vs_pl','r',2,'metricas','clave')}).
+      El radar, en cambio, se desvió {c('par3','fc_mae')} lpm con r = {c('par3','fc_r',2)}: acierta la FC media,
+      pero no sus cambios. Igual que en el par 2, el canal 4 cuenta respiraciones de más y la FR se compara contra la onda
+      ({c('par3','fr_mae')} rpm de error medio).""",
+    "par4": f"""Es el par con la referencia más limpia: los canales 3 y 4 coinciden con lo que muestran las ondas crudas.
+      Sobre {c('par4','duracion_s',0)} s, el radar se desvió {c('par4','fc_mae')} lpm en FC y {c('par4','fr_mae')} rpm
+      en FR, y quedó dentro de la tolerancia el {c('par4','fc_tol',0)} % y el {c('par4','fr_tol',0)} % de las veces.""",
+}
+
+LEYENDA_FC = {"base": [("PowerLab canal 3", 0, False), ("PowerLab desde onda de pulso", 1, True), ("Radar", 2, False)],
+              "cmae": [("CMAE ECG", 3, False), ("CMAE oxímetro", 4, False)]}
+LEYENDA_FR = [("PowerLab canal 4", 0, False), ("PowerLab desde onda respiratoria", 1, True), ("Radar", 2, False)]
+
+
+SG_PAR = "par4"
+SG_TXT = "Savitzky-Golay (ventana 21 s, orden 3)"
+
+
+def leyenda(items, sg=False):
+    lis = "".join(f'<li><span class="cx-sw{" cx-sw-dash" if d else ""}" data-c="{i}"></span>{t}</li>' for t, i, d in items)
+    if sg:
+        lis = (f'<li class="cx-leg-sg" hidden><span class="cx-sw cx-sw-thick" data-c="0"></span>PowerLab canal 3 filtrado</li>'
+               + lis.replace('<li><span class="cx-sw" data-c="0"></span>PowerLab canal 3</li>',
+                             '<li><span class="cx-sw" data-c="0" data-sg-faint></span>PowerLab canal 3</li>', 1))
+    return '<ul class="cx-legend">' + lis + "</ul>"
+
+
+def control_sg(par):
+    if par != SG_PAR:
+        return ""
+    return f'''<div class="cx-sg">
+      <label class="cx-switch" for="{par}-sg"><input type="checkbox" id="{par}-sg" class="cx-sg-input" data-par="{par}">
+        Filtrar la FC del PowerLab con {SG_TXT}</label>
+      <p class="cx-note">El canal 3 trae mucho ruido latido a latido. Con el filtro activo se ve la curva suavizada y la original queda
+        atenuada de fondo. Comparado con la serie filtrada, el radar tiene un error medio de
+        {c(f"{par}-FC-c3_sg", "mae", 1, "metricas", "clave")} lpm (sin filtro: {c(f"{par}-FC-c3", "mae", 1, "metricas", "clave")} lpm)
+        y r = {c(f"{par}-FC-c3_sg", "r", 2, "metricas", "clave")}.</p>
+    </div>'''
+
+
+def seccion(par, primero):
+    r = resumen[par]
+    fc_items = LEYENDA_FC["base"] + (LEYENDA_FC["cmae"] if r["archivo_cmae"] else [])
+    alertas = ""
+    if r["alertas"]:
+        alertas = f'''<aside class="cx-alert" id="{par}-alertas" aria-label="Alertas de calidad de datos">
+        <h3>Calidad de la referencia</h3>
+        <ul data-draw="alertas" data-par="{par}" data-source="resumen"></ul></aside>'''
+    cmae = ""
+    if r["archivo_cmae"]:
+        cmae = f'<div><dt>CMAE</dt><dd>{c(par, "archivo_cmae")}</dd></div>'
+    tabla_fases = ""
+    if par in con_fases:
+        tabla_fases = f'''
+      <h3 id="{par}-fases-titulo">Error por fase del protocolo</h3>
+      <p class="cx-note">Error medio absoluto del radar contra los canales 3 y 4 del PowerLab en cada fase.</p>
+      <div class="cx-scroll"><table class="cx-table" id="{par}-fases" data-source="fases" data-row-key="clave">
+        <thead><tr><th data-field="condicion">Fase</th><th data-field="duracion_s" class="n">Duración (s)</th>
+        <th data-field="fc_n" class="n">FC n</th><th data-field="fc_mae" class="n">FC error medio (lpm)</th>
+        <th data-field="fc_sesgo" class="n">FC sesgo</th><th data-field="fr_n" class="n">FR n</th>
+        <th data-field="fr_mae" class="n">FR error medio (rpm)</th><th data-field="fr_sesgo" class="n">FR sesgo</th></tr></thead>
+        <tbody data-draw="tabla-fases" data-par="{par}"></tbody></table></div>'''
+    return f'''
+  <section class="cx-par" id="{par}" aria-labelledby="tab-{par}"{"" if primero else " hidden"}>
+    <header class="cx-par-head">
+      <h2>{r["nombre"]}</h2>
+      <dl class="cx-files">
+        <div><dt>PowerLab</dt><dd>{c(par, "archivo_powerlab")} · bloque {c(par, "bloque_usado")} de {c(par, "bloques_total", 0)}</dd></div>
+        <div><dt>Radar</dt><dd>{c(par, "archivo_radar")}</dd></div>{cmae}
+        <div><dt>Ventana común</dt><dd>{c(par, "inicio")} – {c(par, "fin")} ({c(par, "duracion_s", 0)} s)</dd></div>
+      </dl>
+    </header>
+    <p class="cx-lede" data-read lang="es-CL">{HALLAZGOS[par]}</p>
+    {alertas}
+    <div class="cx-kpis">
+      <div class="cx-kpi" id="{par}-kpi-fc"><span class="cx-kpi-l">FC · error medio</span>
+        <span class="cx-kpi-v">{c(par, "fc_mae")}<small> lpm</small></span>
+        <span class="cx-kpi-s">sesgo {c(par, "fc_sesgo")} lpm · {c(par, "fc_tol", 0)} % dentro de ±5 lpm</span></div>
+      <div class="cx-kpi" id="{par}-kpi-fr"><span class="cx-kpi-l">FR · error medio</span>
+        <span class="cx-kpi-v">{c(par, "fr_mae")}<small> rpm</small></span>
+        <span class="cx-kpi-s">contra {c(par, "fr_ref")} · {c(par, "fr_tol", 0)} % dentro de ±2 rpm</span></div>
+      <div class="cx-kpi" id="{par}-kpi-onda"><span class="cx-kpi-l">Onda respiratoria · correlación</span>
+        <span class="cx-kpi-v">{c(par, "onda_r", 2)}</span>
+        <span class="cx-kpi-s">desfase {c(par, "onda_lag_s")} s entre radar y PowerLab</span></div>
+      <div class="cx-kpi" id="{par}-kpi-cob"><span class="cx-kpi-l">Cobertura del radar</span>
+        <span class="cx-kpi-v">{c(par, "cob_fc", 0)}<small> %</small></span>
+        <span class="cx-kpi-s">FC y FR cada {c(par, "periodo_hr_s")} s · onda cada {c(par, "periodo_bw_s")} s</span></div>
+    </div>
+
+    <h3 id="{par}-fc-titulo">Frecuencia cardíaca en el tiempo</h3>
+    {control_sg(par)}
+    {leyenda(fc_items, sg=(par == SG_PAR))}
+    <div class="cx-chart" id="{par}-fc" data-draw="serie" data-par="{par}" data-var="fc" data-source="series eventos"></div>
+
+    <h3 id="{par}-fr-titulo">Frecuencia respiratoria en el tiempo</h3>
+    {leyenda(LEYENDA_FR)}
+    <div class="cx-chart" id="{par}-fr" data-draw="serie" data-par="{par}" data-var="fr" data-source="series eventos"></div>
+
+    <h3 id="{par}-onda-titulo">Onda respiratoria: PowerLab canal 1 vs radar</h3>
+    <p class="cx-note">Ambas ondas filtradas (0,08–0,8 Hz) y normalizadas; la del radar va corregida por el desfase
+      estimado{" y con la polaridad invertida" if r["onda_invertida"] else ""}. Mueve el control para recorrer la ventana de 60 s.</p>
+    {leyenda([("PowerLab canal 1", 0, False), ("Radar (forma de onda BW)", 2, False)])}
+    <div class="cx-chart cx-chart-onda" id="{par}-onda" data-draw="onda" data-par="{par}" data-source="ondas"></div>
+
+    <h3 id="{par}-ba-titulo">Concordancia (Bland-Altman)</h3>
+    <p class="cx-note">Cada punto es un valor reportado por el radar frente al PowerLab en ese mismo segundo.
+      La línea continua es el sesgo y las punteadas, los límites de acuerdo (±1,96 DE).</p>
+    <div class="cx-ba-grid">
+      <figure><figcaption>FC (contra canal 3)</figcaption>
+        <div class="cx-chart cx-chart-ba" id="{par}-ba-fc" data-draw="ba" data-par="{par}" data-var="FC" data-source="puntos metricas"></div></figure>
+      <figure><figcaption>FR (contra {c(par, "fr_ref")})</figcaption>
+        <div class="cx-chart cx-chart-ba" id="{par}-ba-fr" data-draw="ba" data-par="{par}" data-var="FR" data-source="puntos metricas"></div></figure>
+    </div>
+
+    <h3 id="{par}-metricas-titulo">Métricas de error</h3>
+    <div class="cx-scroll"><table class="cx-table" id="{par}-metricas" data-source="metricas" data-row-key="clave">
+      <thead><tr><th data-field="comparacion">Comparación</th><th data-field="n" class="n">n</th>
+      <th data-field="mae" class="n">Error medio</th><th data-field="rmse" class="n">RMSE</th>
+      <th data-field="sesgo" class="n">Sesgo</th><th data-field="loa_inf" class="n">LdA inf.</th>
+      <th data-field="loa_sup" class="n">LdA sup.</th><th data-field="r" class="n">r</th>
+      <th data-field="dentro_tol" class="n">% en tolerancia</th><th data-field="tolerancia">Tolerancia</th></tr></thead>
+      <tbody data-draw="tabla-metricas" data-par="{par}"></tbody></table></div>
+    {tabla_fases}
+  </section>'''
+
+
+TABS = "".join(
+    f'<button type="button" role="tab" class="cx-tab" id="tab-{p}" data-target="{p}" aria-controls="{p}" '
+    f'aria-selected="{"true" if i == 0 else "false"}">{resumen[p]["nombre"]}</button>'
+    for i, p in enumerate(["par1", "par2", "par3", "par4"]))
+
+CSS = r"""
+<style>
+.cx { font-family: var(--font-anthropic-sans); color: var(--color-fg); display: grid; gap: var(--cds-gap-lg); }
+.cx h1 { font-family: var(--font-anthropic-serif); font-weight: 400; font-size: var(--cds-font-size-title); margin: 0; text-wrap: balance; }
+.cx h2 { font-size: var(--cds-font-size-heading); margin: 0; }
+.cx h3 { font-size: var(--cds-font-size-body); font-weight: var(--cds-font-weight-medium); margin: var(--cds-gap-md) 0 0; }
+.cx-intro { max-width: 70ch; color: var(--color-fg-muted); margin: 0; }
+.cx-tabs { display: flex; flex-wrap: wrap; gap: var(--cds-gap-xs); border-bottom: 1px solid var(--color-border-line); }
+.cx-tab { font: inherit; background: none; border: 0; border-bottom: 2px solid transparent; padding: var(--cds-pad-sm) var(--cds-pad-md);
+  color: var(--color-fg-muted); cursor: pointer; margin-bottom: -1px; }
+.cx-tab:hover { color: var(--color-fg); }
+.cx-tab[aria-selected="true"] { color: var(--color-fg); border-bottom-color: var(--color-fg); font-weight: var(--cds-font-weight-medium); }
+.cx-tab:focus-visible { outline: 2px solid var(--color-fg); outline-offset: 2px; }
+.cx-par { display: grid; gap: var(--cds-gap-md); min-width: 0; }
+.cx-par-head { display: grid; gap: var(--cds-gap-sm); }
+.cx-files { display: flex; flex-wrap: wrap; gap: var(--cds-gap-xs) var(--cds-gap-lg); margin: 0; font-size: var(--cds-font-size-caption); }
+.cx-files div { display: flex; gap: var(--cds-gap-xs); min-width: 0; }
+.cx-files dt { color: var(--color-fg-muted); }
+.cx-files dd { margin: 0; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.cx-lede { max-width: 72ch; margin: 0; line-height: 1.55; }
+.cx-num { font-variant-numeric: tabular-nums; font-weight: var(--cds-font-weight-medium); }
+.cx-alert { border: 1px solid var(--color-warn); border-radius: var(--cds-radius); padding: var(--cds-pad-md) var(--cds-pad-lg); }
+.cx-alert h3 { margin: 0 0 var(--cds-gap-xs); color: var(--color-warn); font-size: var(--cds-font-size-caption); text-transform: uppercase; letter-spacing: .04em; }
+.cx-alert ul { margin: 0; padding-left: 1.1em; display: grid; gap: var(--cds-gap-xs); max-width: 80ch; }
+.cx-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: var(--cds-gap-md); }
+.cx-kpi { background: var(--color-panel); border: 1px solid var(--color-border-line); border-radius: var(--cds-radius); padding: var(--cds-pad-lg);
+  display: grid; gap: var(--cds-gap-xs); align-content: start; }
+.cx-kpi-l { font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); }
+.cx-kpi-v { font-family: var(--font-anthropic-serif); font-weight: 400; font-size: var(--cds-font-size-title); font-variant-numeric: tabular-nums; line-height: 1.1; }
+.cx-kpi-v .cx-num { font-weight: 400; }
+.cx-kpi-v small { font-family: var(--font-anthropic-sans); font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); }
+.cx-kpi-s { font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); }
+.cx-note { margin: 0; color: var(--color-fg-muted); font-size: var(--cds-font-size-caption); max-width: 80ch; }
+.cx-legend { list-style: none; display: flex; flex-wrap: wrap; gap: var(--cds-gap-xs) var(--cds-gap-md); margin: 0; padding: 0; font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); }
+.cx-legend li { display: flex; align-items: center; gap: 6px; }
+.cx-sw { width: 16px; height: 0; border-top: 2px solid currentColor; display: inline-block; }
+.cx-sw-dash { border-top-style: dashed; }
+.cx-chart { position: relative; min-height: 260px; min-width: 0; }
+.cx-chart-ba { min-height: 240px; }
+.cx-chart svg { display: block; overflow: visible; }
+.cx-chart .tick text, .cx-chart .cx-axl { fill: var(--cds-text-secondary); font-size: var(--cds-font-size-caption); font-family: var(--font-anthropic-sans); }
+.cx-chart .domain, .cx-chart .tick line { stroke: var(--cds-chart-axis); }
+.cx-chart .cx-grid line { stroke: var(--cds-chart-grid); }
+.cx-chart .cx-grid .domain { display: none; }
+.cx-tip { position: absolute; pointer-events: none; background: var(--cds-surface-popover); border: 1px solid var(--cds-border);
+  box-shadow: var(--cds-shadow-popover); border-radius: var(--cds-radius); padding: var(--cds-pad-xs) var(--cds-pad-sm);
+  font-size: var(--cds-font-size-caption); white-space: nowrap; z-index: 2; font-variant-numeric: tabular-nums; }
+.cx-tip b { font-weight: var(--cds-font-weight-medium); }
+.cx-tip .cx-tip-h { color: var(--cds-text-secondary); }
+.cx-tip-row { display: flex; align-items: center; gap: 6px; }
+.cx-empty { color: var(--color-fg-muted); font-size: var(--cds-font-size-caption); padding: var(--cds-pad-lg) 0; }
+.cx-onda-ctl { display: flex; flex-wrap: wrap; align-items: center; gap: var(--cds-gap-sm); font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); margin-bottom: var(--cds-gap-xs); }
+.cx-onda-ctl input { flex: 1 1 200px; min-width: 0; accent-color: var(--color-fg); }
+.cx-ba-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: var(--cds-gap-lg); }
+.cx-ba-grid figure { margin: 0; min-width: 0; }
+.cx-ba-grid figcaption { font-size: var(--cds-font-size-caption); color: var(--color-fg-muted); margin-bottom: var(--cds-gap-xs); }
+.cx-scroll { overflow-x: auto; }
+.cx-table { border-collapse: collapse; width: 100%; font-size: var(--cds-font-size-caption); font-variant-numeric: tabular-nums; }
+.cx-table th, .cx-table td { text-align: left; padding: var(--cds-pad-xs) var(--cds-pad-sm); border-bottom: 1px solid var(--color-border-line); white-space: nowrap; }
+.cx-table th { color: var(--color-fg-muted); font-weight: var(--cds-font-weight-medium); }
+.cx-table .n { text-align: right; }
+.cx-table td.cx-muted { color: var(--color-fg-muted); }
+.cx details { border-top: 1px solid var(--color-border-line); padding-top: var(--cds-pad-md); }
+.cx summary { cursor: pointer; font-weight: var(--cds-font-weight-medium); }
+.cx details ul { max-width: 80ch; line-height: 1.55; display: grid; gap: var(--cds-gap-xs); }
+.cx-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--cds-gap-md); }
+.cx-theme { font: inherit; font-size: var(--cds-font-size-caption); color: var(--color-fg); background: var(--color-panel);
+  border: 1px solid var(--color-border-line); border-radius: 999px; padding: var(--cds-pad-xs) var(--cds-pad-md); cursor: pointer; }
+.cx-theme::before { content: "○ "; }
+.cx-theme[aria-pressed="true"]::before { content: "● "; }
+.cx-theme:focus-visible, .cx-switch input:focus-visible { outline: 2px solid var(--color-fg); outline-offset: 2px; }
+.cx-sg { display: grid; gap: var(--cds-gap-xs); }
+.cx-switch { display: inline-flex; align-items: center; gap: var(--cds-gap-sm); cursor: pointer; font-size: var(--cds-font-size-caption); }
+.cx-switch input { width: 16px; height: 16px; accent-color: var(--color-fg); margin: 0; }
+.cx-sw-thick { border-top-width: 3px; }
+.cx.cx-claro {
+  --color-fg: #1d2129; --color-fg-muted: #5c6370; --color-bg: #ffffff; --color-panel: #f5f6f8; --color-border-line: #e1e4e9;
+  --color-warn: #8a5300; --color-ok: #006300; --color-bad: #8e2626;
+  --cds-text-secondary: #5c6370; --cds-chart-grid: #eceef1; --cds-chart-axis: #c4c9d1; --cds-chart-reference: #7d8592;
+  --cds-chart-muted: #9aa2ad; --cds-chart-status-critical: #b42318;
+  --cds-surface-popover: #ffffff; --cds-border: #e1e4e9; --cds-shadow-popover: 0 4px 16px rgba(20, 24, 33, .12);
+  color-scheme: light; background: var(--color-bg); color: var(--color-fg);
+  padding: var(--cds-pad-lg); border-radius: var(--cds-radius);
+}
+@media print { .cx-tabs { display: none; } .cx-par { break-before: page; } .cx-onda-ctl { display: none; } }
+</style>"""
+
+JS = r"""
+<script>
+(function () {
+  const L = d3.formatLocale({ decimal: ',', thousands: '.', grouping: [3], currency: ['$', ''] });
+  const COLORS = dash.colors;
+  // paleta de referencia (validada) para el modo claro
+  const CLARO = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4'];
+  window.cxFmt = (v, dec) => (v == null || Number.isNaN(v)) ? 'sin dato' : L.format(`,.${dec}f`)(v);
+  window.cxColor = (i) => (document.querySelector('.cx.cx-claro') ? CLARO[i % CLARO.length] : COLORS[i % COLORS.length]);
+  const mmss = (s) => { const m = Math.floor(s / 60), r = Math.round(s % 60); return `${m}:${String(r).padStart(2, '0')}`; };
+  window.cxMmss = mmss;
+
+  // colores de las leyendas (solo style)
+  const pintar = () => document.querySelectorAll('.cx-sw[data-c]').forEach((sw) => { sw.style.color = window.cxColor(+sw.dataset.c); });
+  pintar();
+
+  // modo claro (se recuerda en este navegador)
+  const raiz = document.querySelector('.cx');
+  const btn = document.getElementById('cx-tema');
+  function tema(claro, guardar) {
+    if (!raiz) return;
+    raiz.classList.toggle('cx-claro', claro);
+    if (btn) btn.setAttribute('aria-pressed', claro ? 'true' : 'false');
+    pintar();
+    ['serie', 'onda', 'ba'].forEach((n) => dash.draw(n));
+    if (guardar) { try { localStorage.setItem('cx-tema', claro ? 'claro' : 'sistema'); } catch (e) { /* sin almacenamiento */ } }
+  }
+  let guardado = null;
+  try { guardado = localStorage.getItem('cx-tema'); } catch (e) { /* sin almacenamiento */ }
+  if (guardado === 'claro' && raiz) { raiz.classList.add('cx-claro'); if (btn) btn.setAttribute('aria-pressed', 'true'); pintar(); }
+  if (btn) btn.addEventListener('click', () => tema(!raiz.classList.contains('cx-claro'), true));
+
+  // filtro Savitzky-Golay opcional
+  document.querySelectorAll('.cx-sg-input').forEach((inp) => {
+    inp.addEventListener('change', () => {
+      const sec = document.getElementById(inp.dataset.par);
+      if (sec) {
+        sec.querySelectorAll('.cx-leg-sg').forEach((li) => { li.hidden = !inp.checked; });
+        sec.querySelectorAll('[data-sg-faint]').forEach((sw) => { sw.style.opacity = inp.checked ? '0.35' : ''; });
+      }
+      dash.draw('serie');
+    });
+  });
+
+  // pestañas
+  const tabs = [...document.querySelectorAll('.cx-tab')];
+  function abrir(id) {
+    if (!document.getElementById(id)) return;
+    tabs.forEach((t) => {
+      const on = t.dataset.target === id;
+      t.setAttribute('aria-selected', on ? 'true' : 'false');
+      t.setAttribute('tabindex', on ? '0' : '-1');
+      const s = document.getElementById(t.dataset.target);
+      if (s) s.hidden = !on;
+    });
+    dash.setLink(id);
+  }
+  tabs.forEach((t) => t.addEventListener('click', () => abrir(t.dataset.target)));
+  const h = (location.hash || '').slice(1);
+  if (h && document.getElementById(h)) abrir(h);
+
+  let antes = null;
+  window.addEventListener('beforeprint', () => {
+    if (antes) return;
+    antes = [...document.querySelectorAll('.cx-par')].map((s) => [s, s.hidden]);
+    antes.forEach(([s]) => { s.hidden = false; });
+  });
+  window.addEventListener('afterprint', () => { if (antes) antes.forEach(([s, v]) => { s.hidden = v; }); antes = null; });
+})();
+
+function cxRows(id, par) {
+  const g = dash.data(id);
+  if (g.status !== 'ok') return { status: g.status, rows: [] };
+  return { status: 'ok', rows: par ? g.data.filter((r) => r.par === par) : g.data };
+}
+function cxEstado(el, status, msg) {
+  el.replaceChildren();
+  const p = document.createElement('p');
+  p.className = 'cx-empty';
+  p.textContent = status === 'error' ? 'No se pudieron cargar los datos de este gráfico.' : (status === 'ok' ? msg : '—');
+  el.appendChild(p);
+}
+
+// cifras sueltas: leen su propia marca (data-source, data-field, data-where)
+dash.draw('cifra', (el) => {
+  const g = dash.data(el.dataset.source);
+  if (g.status !== 'ok') { el.textContent = '—'; return; }
+  const w = [...new URLSearchParams(el.dataset.where)];
+  const row = g.data.find((r) => w.every(([k, v]) => String(r[k]) === v));
+  const v = row ? row[el.dataset.field] : null;
+  el.textContent = typeof v === 'number' ? cxFmt(v, el.dataset.dec != null ? +el.dataset.dec : 1) : (v == null || v === '' ? 'sin dato' : String(v));
+});
+
+dash.draw('alertas', (el) => {
+  const { status, rows } = cxRows('resumen', el.dataset.par);
+  el.replaceChildren();
+  if (status !== 'ok' || !rows.length) return;
+  let al = rows[0].alertas || [];
+  if (typeof al === 'string') { try { al = JSON.parse(al); } catch (e) { al = [al]; } }
+  if (!Array.isArray(al)) al = [];
+  al.forEach((a) => { const li = document.createElement('li'); li.textContent = a; el.appendChild(li); });
+});
+
+function cxTip(el) {
+  let tip = el.querySelector('.cx-tip');
+  if (!tip) { tip = document.createElement('div'); tip.className = 'cx-tip'; tip.hidden = true; el.appendChild(tip); }
+  return tip;
+}
+function cxTipPlace(el, tip, x, y) {
+  const w = el.clientWidth, tw = tip.offsetWidth;
+  tip.style.left = Math.max(0, Math.min(w - tw, x + 14 > w - tw ? x - tw - 14 : x + 14)) + 'px';
+  tip.style.top = Math.max(0, y - 10) + 'px';
+}
+function cxTipRows(tip, head, items) {
+  tip.replaceChildren();
+  const hd = document.createElement('div'); hd.className = 'cx-tip-h'; hd.textContent = head; tip.appendChild(hd);
+  items.forEach(([label, val, color]) => {
+    const r = document.createElement('div'); r.className = 'cx-tip-row';
+    if (color) { const s = document.createElement('span'); s.className = 'cx-sw'; s.style.color = color; r.appendChild(s); }
+    const t = document.createElement('span'); t.textContent = label + ': '; r.appendChild(t);
+    const b = document.createElement('b'); b.textContent = val; r.appendChild(b);
+    tip.appendChild(r);
+  });
+}
+
+// series de FC / FR en el tiempo
+const CX_SERIES = {
+  fc: { unidad: 'lpm', s: [['hr_pl', 'PowerLab canal 3', 0, false, false], ['hr_pl_onda', 'PowerLab desde onda de pulso', 1, true, false],
+    ['hr_radar', 'Radar', 2, false, true], ['hr_cmae_ecg', 'CMAE ECG', 3, false, false], ['hr_cmae_ox', 'CMAE oxímetro', 4, false, false]] },
+  fr: { unidad: 'rpm', s: [['br_pl', 'PowerLab canal 4', 0, false, false], ['br_pl_onda', 'PowerLab desde onda respiratoria', 1, true, false],
+    ['br_radar', 'Radar', 2, false, true]] },
+};
+dash.draw('serie', (el) => {
+  const par = el.dataset.par, cfg = CX_SERIES[el.dataset.var];
+  const S = cxRows('series', par), E = cxRows('eventos', par);
+  if (S.status !== 'ok') return cxEstado(el, S.status);
+  const rows = S.rows;
+  const sgIn = el.dataset.var === 'fc' ? document.getElementById(par + '-sg') : null;
+  const sgOn = !!(sgIn && sgIn.checked);
+  const cfgS = cfg.s.slice();
+  if (sgOn) cfgS.splice(1, 0, ['hr_pl_sg', 'PowerLab canal 3 filtrado', 0, false, false]);
+  const series = cfgS.filter(([k]) => rows.some((r) => r[k] != null));
+  if (!rows.length || !series.length) return cxEstado(el, 'ok', 'Sin datos para este par.');
+  const ev = E.status === 'ok' ? E.rows : [];
+  const W = el.clientWidth || 600, H = 260, m = { t: 22, r: 12, b: 28, l: 40 };
+  const x = d3.scaleLinear().domain(d3.extent(rows, (r) => r.t)).range([m.l, W - m.r]);
+  const vals = rows.flatMap((r) => series.map(([k]) => r[k])).filter((v) => v != null);
+  const y = d3.scaleLinear().domain(d3.extent(vals)).nice().range([H - m.b, m.t]);
+  el.replaceChildren();
+  const svg = d3.select(el).append('svg').attr('width', '100%').attr('viewBox', `0 0 ${W} ${H}`).attr('role', 'img')
+    .attr('aria-label', `${el.dataset.var === 'fc' ? 'Frecuencia cardíaca' : 'Frecuencia respiratoria'} del PowerLab y del radar en el tiempo`);
+  const fases = ev.filter((e) => e.tipo === 'FASE');
+  svg.append('g').selectAll('rect').data(fases).join('rect')
+    .attr('x', (f) => x(Math.max(f.t, x.domain()[0]))).attr('y', m.t)
+    .attr('width', (f) => Math.max(0, x(Math.min(f.fin, x.domain()[1])) - x(Math.max(f.t, x.domain()[0]))))
+    .attr('height', H - m.t - m.b).style('fill', 'var(--cds-chart-muted)').style('opacity', (f, i) => i % 2 ? 0.08 : 0.18);
+  const anchoF = (f) => x(Math.min(f.fin, x.domain()[1])) - x(Math.max(f.t, x.domain()[0]));
+  svg.append('g').selectAll('text').data(fases).join('text')
+    .attr('class', 'cx-axl').attr('x', (f) => x(Math.max(f.t, x.domain()[0])) + 4).attr('y', m.t + 12)
+    .text((f) => f.valor.replace(/_/g, ' ').toLowerCase())
+    .each(function (f) { if (this.getComputedTextLength() > anchoF(f) - 8) this.remove(); });
+  svg.append('g').attr('class', 'cx-grid').attr('transform', `translate(${m.l},0)`)
+    .call(d3.axisLeft(y).ticks(5).tickSize(-(W - m.l - m.r)).tickFormat(''));
+  svg.append('g').attr('transform', `translate(0,${H - m.b})`).call(d3.axisBottom(x).ticks(Math.max(2, Math.floor(W / 90))).tickFormat(cxMmss));
+  svg.append('g').attr('transform', `translate(${m.l},0)`).call(d3.axisLeft(y).ticks(5).tickFormat((v) => cxFmt(v, 0)));
+  svg.append('text').attr('class', 'cx-axl').attr('x', m.l).attr('y', 10).text(cfg.unidad);
+  const marcas = ev.filter((e) => e.tipo === 'RADAR_MARK' || e.tipo === 'COMENTARIO_POWERLAB');
+  svg.append('g').selectAll('line').data(marcas).join('line')
+    .attr('x1', (e) => x(e.t)).attr('x2', (e) => x(e.t)).attr('y1', m.t).attr('y2', H - m.b)
+    .style('stroke', 'var(--cds-chart-reference)').style('stroke-dasharray', '3 3');
+  svg.append('g').selectAll('line').data(ev.filter((e) => e.tipo === 'RADAR_EVENT' && e.valor === 'MOVE')).join('line')
+    .attr('x1', (e) => x(e.t)).attr('x2', (e) => x(e.t)).attr('y1', H - m.b - 6).attr('y2', H - m.b)
+    .style('stroke', 'var(--cds-chart-status-critical)').style('stroke-width', 1.5);
+  series.forEach(([k, , ci, dashed, step]) => {
+    svg.append('path').datum(rows).attr('fill', 'none')
+      .attr('d', d3.line().defined((r) => r[k] != null).x((r) => x(r.t)).y((r) => y(r[k])).curve(step ? d3.curveStepAfter : d3.curveLinear))
+      .style('stroke', cxColor(ci)).style('stroke-width', k === 'hr_pl_sg' ? 2.5 : (sgOn && k === 'hr_pl' ? 1.5 : 2))
+      .style('stroke-dasharray', dashed ? '5 4' : null)
+      .style('opacity', sgOn && k === 'hr_pl' ? 0.3 : (k === 'hr_pl_onda' || k === 'br_pl_onda' ? 0.75 : 1));
+  });
+  const cross = svg.append('line').attr('y1', m.t).attr('y2', H - m.b).style('stroke', 'var(--cds-chart-axis)').attr('visibility', 'hidden');
+  const tip = cxTip(el);
+  const bis = d3.bisector((r) => r.t).center;
+  svg.append('rect').attr('x', m.l).attr('y', m.t).attr('width', W - m.l - m.r).attr('height', H - m.t - m.b)
+    .style('fill', 'transparent')
+    .on('pointermove', (e) => {
+      const [px] = d3.pointer(e, svg.node());
+      const r = rows[bis(rows, x.invert(px))];
+      if (!r) return;
+      cross.attr('x1', x(r.t)).attr('x2', x(r.t)).attr('visibility', 'visible');
+      const fase = fases.find((f) => r.t >= f.t && r.t < f.fin);
+      cxTipRows(tip, `t = ${cxMmss(r.t)}${fase ? ' · ' + fase.valor.replace(/_/g, ' ').toLowerCase() : ''}`,
+        series.map(([k, label, ci]) => [label, r[k] == null ? 'sin dato' : `${cxFmt(r[k], k.endsWith('radar') ? 0 : 1)} ${cfg.unidad}`, cxColor(ci)]));
+      tip.hidden = false;
+      const b = el.getBoundingClientRect();
+      cxTipPlace(el, tip, (x(r.t) / W) * b.width, (m.t / H) * b.height);
+    })
+    .on('pointerleave', () => { tip.hidden = true; cross.attr('visibility', 'hidden'); });
+});
+
+// onda respiratoria con ventana deslizante de 60 s
+dash.draw('onda', {
+  mount(el) {
+    const ctl = document.createElement('div'); ctl.className = 'cx-onda-ctl';
+    const lab = document.createElement('label'); lab.textContent = 'Ventana'; lab.htmlFor = el.id + '-rango';
+    const inp = document.createElement('input'); inp.type = 'range'; inp.id = el.id + '-rango'; inp.min = 0; inp.step = 1; inp.value = 0;
+    const out = document.createElement('span'); out.className = 'cx-num';
+    ctl.append(lab, inp, out);
+    const box = document.createElement('div'); box.style.position = 'relative';
+    el.append(ctl, box);
+    const st = { inp, out, box, rows: [] };
+    inp.addEventListener('input', () => this_draw(st));
+    function this_draw(s) { cxOnda(el, s); }
+    st.redraw = () => this_draw(st);
+    return st;
+  },
+  update(el, st) {
+    const O = cxRows('ondas', el.dataset.par);
+    if (O.status !== 'ok') { st.box.replaceChildren(); st.out.textContent = '—'; return; }
+    st.rows = O.rows;
+    const tmax = d3.max(st.rows, (r) => r.t) || 0;
+    st.inp.max = Math.max(0, Math.floor(tmax - 60));
+    st.inp.disabled = tmax <= 60;
+    cxOnda(el, st);
+  },
+});
+function cxOnda(el, st) {
+  const t0 = +st.inp.value, t1 = t0 + 60;
+  st.out.textContent = `${cxMmss(t0)} – ${cxMmss(Math.min(t1, d3.max(st.rows, (r) => r.t) || t1))}`;
+  const rows = st.rows.filter((r) => r.t >= t0 && r.t <= t1);
+  st.box.replaceChildren();
+  if (!rows.length) { const p = document.createElement('p'); p.className = 'cx-empty'; p.textContent = 'Sin onda en esta ventana.'; st.box.appendChild(p); return; }
+  const W = el.clientWidth || 600, H = 220, m = { t: 10, r: 12, b: 28, l: 40 };
+  const x = d3.scaleLinear().domain([t0, t1]).range([m.l, W - m.r]);
+  const ext = d3.extent(rows.flatMap((r) => [r.pl, r.radar]).filter((v) => v != null));
+  const lim = Math.max(2.5, Math.abs(ext[0] || 0), Math.abs(ext[1] || 0));
+  const y = d3.scaleLinear().domain([-lim, lim]).nice().range([H - m.b, m.t]);
+  const svg = d3.select(st.box).append('svg').attr('width', '100%').attr('viewBox', `0 0 ${W} ${H}`).attr('role', 'img')
+    .attr('aria-label', 'Onda respiratoria normalizada del PowerLab y del radar en una ventana de 60 segundos');
+  svg.append('g').attr('class', 'cx-grid').attr('transform', `translate(${m.l},0)`).call(d3.axisLeft(y).ticks(4).tickSize(-(W - m.l - m.r)).tickFormat(''));
+  svg.append('g').attr('transform', `translate(0,${H - m.b})`).call(d3.axisBottom(x).ticks(Math.max(2, Math.floor(W / 90))).tickFormat(cxMmss));
+  svg.append('g').attr('transform', `translate(${m.l},0)`).call(d3.axisLeft(y).ticks(4).tickFormat((v) => cxFmt(v, 0)));
+  [['pl', 0], ['radar', 2]].forEach(([k, ci]) => {
+    svg.append('path').datum(rows).attr('fill', 'none')
+      .attr('d', d3.line().defined((r) => r[k] != null).x((r) => x(r.t)).y((r) => y(r[k])))
+      .style('stroke', cxColor(ci)).style('stroke-width', 2);
+  });
+  const tip = cxTip(st.box);
+  const cross = svg.append('line').attr('y1', m.t).attr('y2', H - m.b).style('stroke', 'var(--cds-chart-axis)').attr('visibility', 'hidden');
+  const bis = d3.bisector((r) => r.t).center;
+  svg.append('rect').attr('x', m.l).attr('y', m.t).attr('width', W - m.l - m.r).attr('height', H - m.t - m.b).style('fill', 'transparent')
+    .on('pointermove', (e) => {
+      const [px] = d3.pointer(e, svg.node());
+      const r = rows[bis(rows, x.invert(px))]; if (!r) return;
+      cross.attr('x1', x(r.t)).attr('x2', x(r.t)).attr('visibility', 'visible');
+      cxTipRows(tip, `t = ${cxFmt(r.t, 1)} s`, [['PowerLab', r.pl == null ? 'sin dato' : cxFmt(r.pl, 2), cxColor(0)], ['Radar', r.radar == null ? 'sin dato' : cxFmt(r.radar, 2), cxColor(2)]]);
+      tip.hidden = false;
+      const b = st.box.getBoundingClientRect();
+      cxTipPlace(st.box, tip, (x(r.t) / W) * b.width, 0);
+    })
+    .on('pointerleave', () => { tip.hidden = true; cross.attr('visibility', 'hidden'); });
+}
+
+// Bland-Altman
+dash.draw('ba', (el) => {
+  const par = el.dataset.par, v = el.dataset.var;
+  const P = cxRows('puntos', par), M = cxRows('metricas', par), R = cxRows('resumen', par);
+  if (P.status !== 'ok' || M.status !== 'ok' || R.status !== 'ok') return cxEstado(el, [P, M, R].find((s) => s.status !== 'ok').status);
+  const ref = v === 'FC' ? 'c3' : R.rows[0].fr_clave;
+  const pts = P.rows.filter((p) => p.variable === v && p.ref_clave === ref && p.ref != null && p.radar != null)
+    .map((p) => ({ media: (p.ref + p.radar) / 2, dif: p.radar - p.ref, ref: p.ref, radar: p.radar }));
+  if (pts.length < 3) return cxEstado(el, 'ok', 'Sin pares válidos: el PowerLab no tiene referencia de esta variable en este par.');
+  const met = M.rows.find((r) => r.clave === `${par}-${v}-${ref}`) || {};
+  const u = v === 'FC' ? 'lpm' : 'rpm';
+  const W = el.clientWidth || 400, H = 240, m = { t: 12, r: 64, b: 32, l: 40 };
+  const x = d3.scaleLinear().domain(d3.extent(pts, (p) => p.media)).nice().range([m.l, W - m.r]);
+  const ys = pts.map((p) => p.dif).concat([met.loa_inf, met.loa_sup, 0].filter((z) => z != null));
+  const y = d3.scaleLinear().domain(d3.extent(ys)).nice().range([H - m.b, m.t]);
+  el.replaceChildren();
+  const svg = d3.select(el).append('svg').attr('width', '100%').attr('viewBox', `0 0 ${W} ${H}`).attr('role', 'img')
+    .attr('aria-label', `Bland-Altman de ${v}: diferencia radar menos PowerLab frente a la media de ambos`);
+  svg.append('g').attr('class', 'cx-grid').attr('transform', `translate(${m.l},0)`).call(d3.axisLeft(y).ticks(5).tickSize(-(W - m.l - m.r)).tickFormat(''));
+  svg.append('g').attr('transform', `translate(0,${H - m.b})`).call(d3.axisBottom(x).ticks(Math.max(2, Math.floor(W / 80))).tickFormat((d) => cxFmt(d, 0)));
+  svg.append('g').attr('transform', `translate(${m.l},0)`).call(d3.axisLeft(y).ticks(5).tickFormat((d) => cxFmt(d, 0)));
+  svg.append('text').attr('class', 'cx-axl').attr('x', W - m.r).attr('y', H - 2).attr('text-anchor', 'end').text(`media (${u})`);
+  svg.append('text').attr('class', 'cx-axl').attr('x', m.l + 4).attr('y', m.t + 10).text(`radar − PowerLab (${u})`);
+  svg.append('line').attr('x1', m.l).attr('x2', W - m.r).attr('y1', y(0)).attr('y2', y(0)).style('stroke', 'var(--cds-chart-axis)');
+  svg.append('g').selectAll('circle').data(pts).join('circle')
+    .attr('cx', (p) => x(p.media)).attr('cy', (p) => y(p.dif)).attr('r', 4)
+    .style('fill', cxColor(2)).style('fill-opacity', 0.45).style('stroke', 'var(--color-bg)').style('stroke-width', 1);
+  const lineas = [['sesgo', met.sesgo, null], ['LdA', met.loa_sup, '4 3'], ['LdA', met.loa_inf, '4 3']].filter((l) => l[1] != null);
+  lineas.forEach(([n, val, dsh]) => {
+    svg.append('line').attr('x1', m.l).attr('x2', W - m.r).attr('y1', y(val)).attr('y2', y(val))
+      .style('stroke', 'var(--color-fg)').style('stroke-width', 1.5).style('stroke-dasharray', dsh);
+    svg.append('text').attr('class', 'cx-axl').attr('x', W - m.r + 4).attr('y', y(val) + 4).text(`${n} ${cxFmt(val, 1)}`);
+  });
+  const tip = cxTip(el);
+  const del = d3.Delaunay.from(pts, (p) => x(p.media), (p) => y(p.dif));
+  svg.append('rect').attr('x', m.l).attr('y', m.t).attr('width', W - m.l - m.r).attr('height', H - m.t - m.b).style('fill', 'transparent')
+    .on('pointermove', (e) => {
+      const [px, py] = d3.pointer(e, svg.node());
+      const p = pts[del.find(px, py)]; if (!p) return;
+      cxTipRows(tip, `${v}`, [['PowerLab', `${cxFmt(p.ref, 1)} ${u}`, cxColor(0)], ['Radar', `${cxFmt(p.radar, 0)} ${u}`, cxColor(2)], ['Diferencia', `${cxFmt(p.dif, 1)} ${u}`]]);
+      tip.hidden = false;
+      const b = el.getBoundingClientRect();
+      cxTipPlace(el, tip, (x(p.media) / W) * b.width, (y(p.dif) / H) * b.height);
+    })
+    .on('pointerleave', () => { tip.hidden = true; });
+});
+
+function cxTabla(el, id, cols) {
+  const { status, rows } = cxRows(id, el.dataset.par);
+  el.replaceChildren();
+  if (status !== 'ok') return;
+  rows.forEach((r) => {
+    const tr = document.createElement('tr'); tr.dataset.key = r.clave;
+    cols.forEach(([k, dec]) => {
+      const td = document.createElement('td');
+      const val = r[k];
+      if (dec == null) td.textContent = val == null ? '' : String(val);
+      else { td.className = 'n' + (val == null ? ' cx-muted' : ''); td.textContent = val == null ? 'sin dato' : cxFmt(val, dec); }
+      tr.appendChild(td);
+    });
+    el.appendChild(tr);
+  });
+}
+dash.draw('tabla-metricas', (el) => cxTabla(el, 'metricas',
+  [['comparacion'], ['n', 0], ['mae', 1], ['rmse', 1], ['sesgo', 1], ['loa_inf', 1], ['loa_sup', 1], ['r', 2], ['dentro_tol', 0], ['tolerancia']]));
+dash.draw('tabla-fases', (el) => cxTabla(el, 'fases',
+  [['condicion'], ['duracion_s', 1], ['fc_n', 0], ['fc_mae', 1], ['fc_sesgo', 1], ['fr_n', 0], ['fr_mae', 1], ['fr_sesgo', 1]]));
+</script>"""
+
+HTML = f"""<meta name="dash-one-writer">
+<meta name="dash-form" content="dashboard">
+{CSS}
+<div class="cx" lang="es-CL">
+  <header class="cx-head" id="encabezado">
+    <h1>Cruce PowerLab vs radar MR60BHA1</h1>
+    <button type="button" class="cx-theme" id="cx-tema" aria-pressed="false">Modo claro</button>
+  </header>
+  <p class="cx-intro" data-read lang="es-CL">Cada pestaña compara un registro del PowerLab (la referencia, a 1 kHz) con el
+    registro del radar tomado al mismo tiempo, alineados por hora absoluta. En los cuatro pares el radar se acerca a la
+    frecuencia cardíaca media pero no sigue sus cambios, y en la respiratoria tiende a marcar menos que el PowerLab.</p>
+  <nav class="cx-tabs" role="tablist" aria-label="Pares de archivos">{TABS}</nav>
+  {"".join(seccion(p, i == 0) for i, p in enumerate(["par1", "par2", "par3", "par4"]))}
+  <details id="metodo">
+    <summary>Cómo se hizo el cruce</summary>
+    <ul data-read lang="es-CL">
+      <li><b>Alineación:</b> cada bloque del PowerLab trae su hora de inicio; el radar guarda la hora de cada dato. Se usa solo
+        el tramo en que ambos registran a la vez.</li>
+      <li><b>Referencia de FC y FR:</b> canales 3 y 4 del PowerLab, descartando valores fuera de rango fisiológico (FC 35–200 lpm,
+        FR 3–45 rpm) y suavizados con una mediana móvil de 5 s. Como control se calcula también la FC y la FR desde las ondas
+        crudas (canales 2 y 1) con análisis espectral en ventanas de 10 y 30 s.</li>
+      <li><b>Comparación:</b> cada valor que reporta el radar se compara con el PowerLab en ese mismo segundo. Error medio = promedio
+        del error absoluto; sesgo = promedio de radar − PowerLab; LdA = límites de acuerdo de Bland-Altman. Tolerancias: ±5 lpm
+        en FC y ±2 rpm en FR.</li>
+      <li><b>Frecuencia real del radar:</b> aunque el radar se configuró a 10 ms, en los archivos entrega FC y FR cada ~3 s y una
+        trama de onda (5 muestras) cada ~1 s. La onda se trata como una señal de 5 Hz.</li>
+      <li><b>Onda respiratoria:</b> el canal 1 se promedia a 5 Hz y ambas ondas se filtran entre 0,08 y 0,8 Hz. El desfase es el que
+        maximiza la correlación dentro de ±5 s.</li>
+      <li><b>Archivo apeaSimulada1.txt:</b> contiene 4 bloques; los dos primeros son los mismos de FrCrisPrueba2.txt y solo el
+        último se solapa con el radar.</li>
+    </ul>
+  </details>
+</div>
+{JS}
+"""
+
+(D / "index.html").write_text(HTML, encoding="utf-8")
+(D / "files_index.json").write_text(json.dumps({"text": HTML}, ensure_ascii=False), encoding="utf-8")
+print(len(HTML.encode("utf-8")) // 1024, "KB")

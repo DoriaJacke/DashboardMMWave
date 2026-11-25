@@ -8,3 +8,4 @@ frontend/dist/
 
 # Configuración local del dashboard (última configuración usada)
 datos/.dashboard_config.json
+datos/.cmae_config.json

@@ -15,7 +15,8 @@
     "lucide-react": "^1.68.0",
     "react": "^19.3.1",
     "react-bootstrap": "^2.10.10",
-    "react-dom": "^19.3.1"
+    "react-dom": "^19.3.1",
+    "uplot": "1.6.32"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^6.2.1",

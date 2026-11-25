@@ -38,7 +38,7 @@ export function useLive() {
         const now = performance.now();
         if (msg.type === "snapshot") {
           const store = emptyStore();
-          ingest(store, msg.records, msg.dist);
+          ingest(store, msg.records, msg.dist, msg.cmae);
           storeRef.current = store;
           const endedOnArrival = firstSnapshot && !!msg.status?.terminado;
           firstSnapshot = false;
@@ -52,7 +52,7 @@ export function useLive() {
             endedOnArrival,
           }));
         } else if (msg.type === "update") {
-          if (msg.data) ingest(storeRef.current, msg.data.records, msg.data.dist);
+          if (msg.data) ingest(storeRef.current, msg.data.records, msg.data.dist, msg.data.cmae);
           setState((s) => ({
             ...s,
             status: msg.status,

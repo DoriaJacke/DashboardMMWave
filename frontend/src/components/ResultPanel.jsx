@@ -42,6 +42,15 @@ export default function ResultPanel({ session, status, nEnd, cfgSummary, onStart
           </dd>
           <dt style={dt}>Duración</dt>
           <dd style={{ margin: 0 }}>{mmss(status.t)}</dd>
+          {status.cmae && (
+            <>
+              <dt style={dt}>Placa CMAE</dt>
+              <dd style={{ margin: 0 }}>
+                <span style={{ fontFamily: "ui-monospace,monospace", fontSize: 12, wordBreak: "break-all" }}>{status.cmae.path}</span>
+                {" · "}{fmt(status.cmae.n)} muestras
+              </dd>
+            </>
+          )}
         </dl>
       </section>
 

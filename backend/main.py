@@ -9,6 +9,8 @@
 # - WebSocket /ws/live: al conectarse envía el historial completo
 #   de la adquisición y después, ~1 vez por segundo (o apenas cambia
 #   la fase), el estado y solo los datos nuevos.
+# - /api/cmae/* y /ws/cmae: placa CMAE (backend/cmae/servicio.py), solo si
+#   está habilitada (MMWAVE_CMAE=1, ver backend/features.py).
 # - Si existe frontend/dist (npm run build) también sirve la interfaz.
 #
 # Hay una sola adquisición a la vez, compartida por todas las
@@ -22,9 +24,11 @@ import hashlib
 import itertools
 import math
 import os
+import re
 import threading
 import time
 from collections import OrderedDict
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -46,6 +50,7 @@ from .acquisition import (
     SimulatedSource,
     list_serial_ports_info,
 )
+from .features import CMAE_HABILITADA
 from .config import ConfigStore, normalize, resolve_filename, validate_start
 from .data_io import FORMATO_SECUENCIA, load_csv, phase_summary, records_to_long, start_wall
 from .plots import SavgolConfig, export_zip
@@ -67,6 +72,7 @@ class FrontendFiles(StaticFiles):
         return response
 
 
+CMAE_CSV = re.compile(r"_cmae(_\d+)?\.csv$", re.IGNORECASE)
 MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 ANALYSIS_CACHE_SIZE = 4  # archivos abiertos en Análisis que se conservan para exportar
 
@@ -214,8 +220,43 @@ def status_signature(session: AcquisitionSession) -> tuple:
 
 def create_app(data_dir: Optional[Path] = None) -> FastAPI:
     data_dir = Path(data_dir or os.environ.get("MMWAVE_DATA_DIR") or DEFAULT_DATA_DIR)
-    app = FastAPI(title="Dashboard mmWave MR60BHA1")
+    # Placa CMAE (ECG, oxímetro, presión): conexión propia, independiente del radar.
+    # Aislada por defecto (backend/features.py): sin ella no se importa backend/cmae/.
+    cmae = None
+    if CMAE_HABILITADA:
+        from .cmae.servicio import ServicioCMAE
+        cmae = ServicioCMAE(data_dir)
+
+    def cmae_datos(session: AcquisitionSession, cursor: Optional[dict] = None) -> tuple[dict, dict]:
+        """Muestras de la placa en la escala de la adquisición ({} si está deshabilitada)."""
+        return cmae.datos_sesion(session, cursor) if cmae is not None else ({}, {})
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        if cmae is not None:
+            await cmae.iniciar()
+        try:
+            yield
+        finally:
+            if cmae is not None:
+                await cmae.cerrar()
+
+    app = FastAPI(title="Dashboard mmWave MR60BHA1", lifespan=lifespan)
     manager = AcquisitionManager()
+    if cmae is not None:
+        app.include_router(cmae.router)
+        cmae.sesion_radar = lambda: manager.session
+
+    @app.get("/api/features")
+    def features():
+        """Funciones opcionales activas; la interfaz oculta lo que esté apagado."""
+        return {"cmae": cmae is not None}
+
+    def status_of(session: AcquisitionSession) -> dict:
+        """Estado de la adquisición, con el CSV de la placa CMAE si se está grabando."""
+        st = status_json(session)
+        st["cmae"] = cmae.resumen_sesion(session) if cmae is not None else None
+        return st
     config_store = ConfigStore(data_dir / ".dashboard_config.json")
     session_ids = itertools.count(1)
     export_lock = threading.Lock()
@@ -248,7 +289,9 @@ def create_app(data_dir: Optional[Path] = None) -> FastAPI:
     def files():
         if not data_dir.exists():
             return {"files": []}
-        found = sorted(data_dir.glob("*.csv"), key=lambda p: p.stat().st_mtime, reverse=True)
+        # Los CSV de la placa CMAE (<archivo>_cmae.csv) acompañan al del radar: no se listan solos.
+        found = sorted((p for p in data_dir.glob("*.csv") if not CMAE_CSV.search(p.name)),
+                       key=lambda p: p.stat().st_mtime, reverse=True)
         return {"files": [
             {"name": p.name, "size": p.stat().st_size,
              "mtime": datetime.fromtimestamp(p.stat().st_mtime).isoformat(timespec="seconds")}
@@ -278,7 +321,7 @@ def create_app(data_dir: Optional[Path] = None) -> FastAPI:
         return {
             "busy": manager.busy,
             "session": session_meta(session),
-            "status": status_json(session) if session is not None else None,
+            "status": status_of(session) if session is not None else None,
         }
 
     @app.post("/api/acquisition")
@@ -378,9 +421,10 @@ def create_app(data_dir: Optional[Path] = None) -> FastAPI:
         records, _ = session.snapshot()
         return {
             "session": session_meta(session),
-            "status": status_json(session),
+            "status": status_of(session),
             "records": [record_json(r) for r in records],
             "dist": dist_json(list(session.dist_history)),
+            "cmae": cmae_datos(session)[0],
         }
 
     @app.get("/api/acquisition/summary")
@@ -503,24 +547,28 @@ def create_app(data_dir: Optional[Path] = None) -> FastAPI:
     # En vivo
     # --------------------------------------------------------
 
-    def snapshot_message(session: AcquisitionSession) -> tuple[dict, int, int]:
+    def snapshot_message(session: AcquisitionSession) -> tuple[dict, int, int, dict]:
         with session.lock:
             records = list(session.records)
             dist = list(session.dist_history)
+        cmae_data, cmae_cursor = cmae_datos(session)
         message = {
             "type": "snapshot",
             "session": session_meta(session),
-            "status": status_json(session),
+            "status": status_of(session),
             "records": [record_json(r) for r in records],
             "dist": dist_json(dist),
+            # Placa CMAE en la escala de tiempo de la adquisición: {señal: [[t...], [v...]]}
+            "cmae": cmae_data,
         }
-        return message, len(records), len(dist)
+        return message, len(records), len(dist), cmae_cursor
 
     @app.websocket("/ws/live")
     async def live(ws: WebSocket):
         await ws.accept()
         sent_id: Any = -1      # id de la adquisición cuyo historial ya se envió
         n_records = n_dist = 0
+        cmae_cursor: dict = {}
         last_signature = None
         last_status = 0.0
         last_export = None
@@ -538,26 +586,30 @@ def create_app(data_dir: Optional[Path] = None) -> FastAPI:
                 if current_id != sent_id:
                     if session is None:
                         await ws.send_json({"type": "snapshot", "session": None, "status": None,
-                                            "records": [], "dist": []})
+                                            "records": [], "dist": [], "cmae": {}})
                     else:
-                        message, n_records, n_dist = snapshot_message(session)
+                        message, n_records, n_dist, cmae_cursor = snapshot_message(session)
                         await ws.send_json(message)
                         last_signature = status_signature(session)
                     sent_id = current_id
                     last_status = now
                 elif session is not None:
                     signature = status_signature(session)
-                    has_new = len(session.records) > n_records or len(session.dist_history) > n_dist
+                    cmae_new, cmae_next = cmae_datos(session, cmae_cursor)
+                    has_new = (len(session.records) > n_records or len(session.dist_history) > n_dist
+                               or bool(cmae_new))
                     if has_new or signature != last_signature or now - last_status >= STATUS_EVERY_S:
-                        message: dict = {"type": "update", "status": status_json(session)}
+                        message: dict = {"type": "update", "status": status_of(session)}
                         records, dist = session.data_since(n_records, n_dist)
-                        if records or dist:
+                        if records or dist or cmae_new:
                             message["data"] = {
                                 "records": [record_json(r) for r in records],
                                 "dist": dist_json(dist),
+                                "cmae": cmae_new,
                             }
                             n_records += len(records)
                             n_dist += len(dist)
+                            cmae_cursor = cmae_next
                         await ws.send_json(message)
                         last_signature = signature
                         last_status = now
@@ -590,6 +642,7 @@ def create_app(data_dir: Optional[Path] = None) -> FastAPI:
             )
 
     app.state.manager = manager
+    app.state.cmae = cmae
     app.state.data_dir = data_dir
     return app
 

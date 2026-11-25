@@ -38,6 +38,8 @@ const json = (p) => p.then((r) => r.json());
 
 export const api = {
   ports: () => json(request("GET", "/api/ports")),
+  /** Funciones opcionales activas en el backend, p. ej. { cmae: false } (backend/features.py). */
+  features: () => json(request("GET", "/api/features")),
   config: () => json(request("GET", "/api/config")),
   saveConfig: (patch) => json(request("PUT", "/api/config", patch)),
   start: (config, filename) => json(request("POST", "/api/acquisition", { config, filename })),

@@ -4,8 +4,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Modal } from "react-bootstrap";
 import AnalysisPage from "./components/AnalysisPage";
+import CmaeMetrics from "./cmae/CmaeMetrics";
+import { CmaePage, CmaeSourceCard } from "./cmae/CmaeView";
+import { useCmae } from "./cmae/useCmae";
 import Banner from "./components/Banner";
-import ChartsCard from "./components/ChartsCard";
+import ChartsCard, { hasCmaeData } from "./components/ChartsCard";
 import ConfigForm, { APNEA_FIELDS, SEQ_FIELDS, baudError, durError, fieldError } from "./components/ConfigForm";
 import DistanceCard from "./components/DistanceCard";
 import Header from "./components/Header";
@@ -25,10 +28,18 @@ const LIVE_VIEW = { x: "t", win: "med", shade: true, sg: false, sgw: 0.8, sgo: 2
 const RESULT_VIEW = { med: "1", x: "i", shade: true, sg: false, sgw: 0.8, sgo: 2 };
 
 const grid = { flex: 1, minHeight: 0, display: "grid", gridTemplateColumns: "400px minmax(0,1fr)", gridTemplateRows: "minmax(0,1fr)", gap: 14 };
+// Con la placa CMAE: sus gráficos van en una tarjeta propia, a la derecha de los del radar.
+const gridCmae = { ...grid, gridTemplateColumns: "400px minmax(0,1fr) minmax(0,1fr)" };
 const leftCol = { display: "flex", flexDirection: "column", gap: 12, minHeight: 0, overflow: "auto", padding: 2, margin: -2 };
 
 export default function App() {
   const live = useLive();
+  // Placa CMAE: aislada del radar mientras se revisa; el backend dice si está habilitada (MMWAVE_CMAE).
+  const [cmaeEnabled, setCmaeEnabled] = useState(false);
+  useEffect(() => {
+    api.features().then((f) => setCmaeEnabled(!!f?.cmae)).catch(() => setCmaeEnabled(false));
+  }, []);
+  const cmae = useCmae(cmaeEnabled); // independiente de la adquisición del radar
   const { toasts, push: toast, close: closeToast } = useToasts();
   const [tab, setTab] = useState("adq");
   const [cfg, setCfgState] = useState(null);
@@ -41,6 +52,8 @@ export default function App() {
   const [modal, setModal] = useState(false);
   const [lv, setLv] = useState(LIVE_VIEW);
   const [rv, setRv] = useState(RESULT_VIEW);
+  // Zoom compartido por la tarjeta del radar y la de la placa CMAE (en modo Tiempo), para que se muevan juntas.
+  const [syncZoom, setSyncZoom] = useState(null);
   const [resTab, setResTab] = useState("charts");
   const [errAck, setErrAck] = useState({});
   const { exp, setDpi, reset: resetExport, generate, download } = useExport(toast);
@@ -98,7 +111,8 @@ export default function App() {
     if (!s || !st) return;
     const isSeq = isSeqLike(s.proto);
     const resetResult = () => {
-      setRv({ ...RESULT_VIEW, med: isSeq ? "1" : "todas" });
+      // Con datos de la placa CMAE se abre en modo Tiempo: en modo Índice sus filas no se pueden alinear con el radar.
+      setRv({ ...RESULT_VIEW, med: isSeq ? "1" : "todas", ...(st.cmae ? { x: "t" } : {}) });
       setResTab("charts");
       resetExport();
       setSummary({ id: null, rows: null, loading: false, error: null });
@@ -202,6 +216,9 @@ export default function App() {
       marks: store.phaseMarks.slice(),
       markers: store.markers.slice(),
       dist: store.dist.slice(),
+      // Placa CMAE, ya en la escala de tiempo de la adquisición (arreglos grandes: no se copian).
+      cmae: store.cmae,
+      hasCmae: hasCmaeData(store.cmae),
       nEnd: store.nEnd,
       noBW: store.bwFrames.length === 0,
     };
@@ -209,17 +226,20 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [live.version]);
 
+  const cmaeOn = !!cmae?.conexion?.activa;
   const chartData = useMemo(() => {
     if (!s || !st) return null;
     const segsAll = segmentsFrom(data.marks, st.t);
     const partial = data.noBW && data.hr.length > 0;
-    const base = { t0Wall: st.t0_wall, partial, version: live.version };
+    const base = { t0Wall: st.t0_wall, partial, version: live.version, cmae: data.cmae };
     if (screen === "live") {
       const w = liveWindow({ win: lv.win, status: st, params: s.params, proto: s.proto, segs: segsAll });
       const f = w.filter;
       const series = f ? [data.bw.filter(f), data.hr.filter(f), data.br.filter(f)] : [data.bw, data.hr, data.br];
       const emptyMsg = st.error ? "No hay datos para graficar." : w.emptyMsg;
-      return { ...base, series, dom: w.dom, segs: w.segs, now: st.t, markers: data.markers, emptyMsg };
+      // Con la placa conectada sus filas aparecen desde el inicio, aunque aún no haya datos grabados.
+      const cmaeMsg = cmaeOn ? emptyMsg : "Placa CMAE desconectada · sin datos en esta ventana.";
+      return { ...base, series, dom: w.dom, segs: w.segs, now: st.t, markers: data.markers, emptyMsg, cmaeOn, cmaeMsg };
     }
     const med = seq && rv.med !== "todas" ? +rv.med : null;
     const f = med != null ? (p) => p.m === med : null;
@@ -234,7 +254,7 @@ export default function App() {
       markers: data.markers,
       emptyMsg: any ? "Sin datos en esta ventana." : "No hay datos para graficar.",
     };
-  }, [data, screen, lv.win, rv.med, s, st, seq, live.version]);
+  }, [data, screen, lv.win, rv.med, s, st, seq, live.version, cmaeOn]);
 
   const chartTitle = !s || !st
     ? ""
@@ -251,6 +271,24 @@ export default function App() {
   );
   const setLiveView = useCallback((patch) => setLv((v) => ({ ...v, ...patch })), []);
   const setResultView = useCallback((patch) => setRv((v) => ({ ...v, ...patch })), []);
+
+  // ---------- Placa CMAE: tarjeta aparte, sincronizada con el radar ----------
+  const curView = screen === "live" ? lv : rv;
+  const timeAxis = curView.x === "t";
+  useEffect(() => setSyncZoom(null), [s?.id, screen, lv.x, lv.win, rv.x, rv.med]);
+  // Siempre en tiempo y sin filtro SG: sus señales no tienen un índice común con el radar.
+  const cmaeView = useMemo(() => ({ ...curView, x: "t", sg: false }), [curView]);
+  const showCmaeCard = screen === "live" ? cmaeOn || data.hasCmae : data.hasCmae;
+  const zoomProps = timeAxis ? { zoom: syncZoom, setZoom: setSyncZoom } : {};
+  const cmaeTitle = !s || !st
+    ? ""
+    : seq && (screen === "live" || rv.med !== "todas")
+      ? `Placa CMAE — Medición ${screen === "live" ? st.medicion || 1 : rv.med}`
+      : "Placa CMAE";
+  const cmaeCard = showCmaeCard && chartData && (
+    <ChartsCard variant="cmae" proto={s.proto} title={cmaeTitle} data={chartData} view={cmaeView} setView={() => {}}
+      zoomKey={s.id} {...zoomProps} />
+  );
 
   // ---------- Resumen por fase ----------
   useEffect(() => {
@@ -283,11 +321,13 @@ export default function App() {
   const form = cfg && (
     <ConfigForm cfg={cfg} setCfg={setCfg} ports={ports.list} scannedAt={ports.scannedAt} onRefreshPorts={refreshPorts}
       fileValue={file || defaultFileName(cfg.proto, stamp)} setFile={(v) => { setFile(v); setCfgErr(null); }}
-      onStart={start} error={cfgErr} starting={starting} />
+      onStart={start} error={cfgErr} starting={starting} extraSource={cmaeEnabled ? <CmaeSourceCard estado={cmae} /> : null} />
   );
 
   let content = null;
-  if (tab === "ana") {
+  if (tab === "cmae" && cmaeEnabled) {
+    content = <CmaePage estado={cmae} />;
+  } else if (tab === "ana") {
     content = <AnalysisPage live={live} liveActive={liveActive} onBack={() => setTab("adq")} toast={toast} unit={cfg?.zone?.unit} />;
   } else if (loadError) {
     content = (
@@ -311,18 +351,20 @@ export default function App() {
       <>
         <Banner status={st} session={s} receivedAt={live.receivedAt} nMarkers={st.n_markers} onConfirm={onConfirm} onMark={onMark}
           onSeeResult={() => setErrAck((a) => ({ ...a, [s.id]: true }))} />
-        <div style={grid}>
+        <div style={showCmaeCard ? gridCmae : grid}>
           <div style={leftCol}>
             <Metrics status={st} receivedAt={live.receivedAt} />
+            {cmaeEnabled && <CmaeMetrics estado={cmae} rec={st.cmae} />}
             <DistanceCard status={st} receivedAt={live.receivedAt} dist={data.dist} zone={cfg.zone} onZone={onZone} />
           </div>
-          <ChartsCard isLive proto={s.proto} title={chartTitle} data={chartData} view={lv} setView={setLiveView} zoomKey={s.id} />
+          <ChartsCard isLive proto={s.proto} title={chartTitle} data={chartData} view={lv} setView={setLiveView} zoomKey={s.id} {...zoomProps} />
+          {cmaeCard}
         </div>
       </>
     );
   } else {
     content = (
-      <div style={grid}>
+      <div style={showCmaeCard ? gridCmae : grid}>
         <div style={leftCol}>
           <ResultPanel session={s} status={st} nEnd={data.nEnd} cfgSummary={cfgSummary} onStart={start} onEdit={() => setModal(true)}
             startError={modal ? null : cfgErr} starting={starting} exp={exp} onDpi={setDpi}
@@ -330,15 +372,16 @@ export default function App() {
             exportProgress={exp.state === "running" ? live.exportProgress : null} />
         </div>
         <ChartsCard isResult proto={s.proto} title={chartTitle} data={chartData} view={rv} setView={setResultView} medOptions={medOptions}
-          tab={resTab} setTab={setResTab} zoomKey={s.id}
+          tab={resTab} setTab={setResTab} zoomKey={s.id} {...(resTab === "charts" ? zoomProps : {})}
           table={<SummaryTable proto={s.proto} rows={summary.rows} loading={summary.loading} error={summary.error} unit={cfg.zone.unit} />} />
+        {cmaeCard}
       </div>
     );
   }
 
   return (
     <div style={{ height: "100vh", display: "flex", flexDirection: "column", overflow: "hidden", background: "var(--color-bg)", color: "var(--color-text)", fontFamily: "var(--font-body)" }}>
-      <Header tab={tab} setTab={setTab} live={live} liveActive={liveActive} screen={screen} onStop={onStop}
+      <Header tab={tab} setTab={setTab} live={live} cmae={cmae} cmaeEnabled={cmaeEnabled} liveActive={liveActive} screen={screen} onStop={onStop}
         sourceText={s ? sourceLabel(s.source.kind, s.source.port, s.source.baud) : ""} startedClock={s ? clock(new Date(s.started_at)) : ""} />
       <main ref={mainRef} style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", gap: 12, padding: "12px 20px", width: "100%", maxWidth: 1680, margin: "0 auto", boxSizing: "border-box" }}>
         {live.loaded && !live.connected && (

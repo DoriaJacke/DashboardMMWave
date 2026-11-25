@@ -1,0 +1,86 @@
+/* Gráficos de la placa CMAE, en el tema claro del dashboard del radar.
+   Los componentes copiados del dashboard CMAE leen estas variables --cm-*;
+   allá son colores para fondo oscuro, aquí están oscurecidos para fondo blanco. */
+
+:root {
+  --cm-font: var(--font-body);
+  --cm-text-3: #7a7a7d;
+  --cm-grid: rgba(29, 31, 32, 0.08);
+
+  --cm-ok: oklch(0.58 0.13 152);
+  --cm-warn: oklch(0.68 0.14 75);
+  --cm-bad: oklch(0.55 0.17 27);
+
+  --cm-ecg: oklch(0.55 0.14 160);
+  --cm-spo2: oklch(0.55 0.12 230);
+  --cm-bpm: oklch(0.56 0.18 15);
+  --cm-teal: oklch(0.52 0.09 190);
+  --cm-orange: oklch(0.62 0.15 50);
+  --cm-violet: oklch(0.52 0.16 300);
+}
+
+.cm-chart {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+.cm-chart .uplot {
+  position: absolute;
+  inset: 0;
+  font-family: var(--cm-font);
+}
+
+.cm-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: #fff;
+  box-shadow: var(--shadow-sm);
+  border-radius: var(--bs-border-radius);
+  padding: 7px 12px 4px;
+  gap: 4px;
+}
+.cm-panel--idle .cm-chart,
+.cm-panel--none .cm-chart { opacity: 0.45; }
+
+.cm-panel__head { display: flex; align-items: center; gap: 8px; min-width: 0; flex: none; }
+.cm-panel__title {
+  font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--color-accent-700);
+  font-family: var(--font-body); font-weight: 500; margin: 0; white-space: nowrap;
+}
+.cm-panel__chip { font-size: 11px; color: var(--color-neutral-600); white-space: nowrap; }
+.cm-panel__body { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 2px; }
+.cm-panel__empty {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  font-size: 13px; color: var(--color-neutral-700); pointer-events: none;
+}
+
+.cm-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--color-neutral-400); }
+.cm-dot--ok { background: var(--cm-ok); }
+.cm-dot--stale { background: var(--cm-warn); }
+.cm-dot--none { background: var(--cm-bad); }
+
+.cm-badge { font-size: 10px; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+.cm-badge--warn { background: oklch(0.95 0.06 92); color: oklch(0.42 0.09 62); }
+.cm-badge--info { background: var(--color-neutral-200); color: var(--color-neutral-800); }
+
+.cm-legend { margin-left: auto; display: flex; align-items: baseline; gap: 10px; font-size: 12px; min-width: 0; }
+.cm-legend__item { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.cm-legend__item i, .cm-row__value i { width: 10px; height: 3px; border-radius: 2px; display: inline-block; flex: none; }
+.cm-legend__value {
+  font-family: var(--font-heading); font-weight: 600; font-size: 18px; font-variant-numeric: tabular-nums;
+}
+.cm-legend__unit { color: var(--color-neutral-700); }
+
+.cm-row { flex: 1; min-height: 0; display: flex; }
+.cm-row--stacked { gap: 8px; }
+.cm-row__side { flex: none; width: 92px; display: flex; flex-direction: column; justify-content: center; gap: 1px; }
+.cm-row__label { font-size: 11px; color: var(--color-neutral-700); }
+.cm-row__value {
+  display: flex; align-items: center; gap: 5px; font-family: var(--font-heading); font-weight: 600;
+  font-size: clamp(18px, 2.6vh, 26px); line-height: 1.05; font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.cm-row__side--multi .cm-row__value { font-size: clamp(15px, 2vh, 20px); }
+.cm-row__value small { font-family: var(--font-body); font-weight: 400; font-size: 11px; color: var(--color-neutral-700); }
