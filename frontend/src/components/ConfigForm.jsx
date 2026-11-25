@@ -42,7 +42,7 @@ export function fieldError(value, min, max, integer) {
 export const durError = (v) => fieldError(v, 0, 36000, false);
 export const baudError = (v) => (v === "" || !(Number(v) > 0) || !Number.isInteger(Number(v)) ? "Revisa el baudrate." : null);
 
-export default function ConfigForm({ cfg, setCfg, ports, scannedAt, onRefreshPorts, fileValue, setFile, onStart, error, starting }) {
+export default function ConfigForm({ cfg, setCfg, ports, scannedAt, onRefreshPorts, fileValue, setFile, onStart, error, starting, extraSource }) {
   const seq = cfg.proto === "seq";
   const apnea = cfg.proto === "apnea";
   const hasPorts = ports.length > 0;
@@ -57,6 +57,8 @@ export default function ConfigForm({ cfg, setCfg, ports, scannedAt, onRefreshPor
   return (
     <>
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1fr) minmax(0,1.35fr)", gap: 20 }}>
+        {/* Columna izquierda: el radar y, debajo, la placa CMAE (extraSource) */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 20, minWidth: 0 }}>
         <div className="card border-0" style={card}>
           <div style={kicker}>Fuente de datos</div>
           <div role="radiogroup" aria-label="Fuente de datos" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -104,6 +106,8 @@ export default function ConfigForm({ cfg, setCfg, ports, scannedAt, onRefreshPor
               Genera datos sintéticos de HR, BR, distancia, eventos y waveform BW para probar el dashboard.
             </p>
           )}
+        </div>
+        {extraSource}
         </div>
 
         <div className="card border-0" style={card}>

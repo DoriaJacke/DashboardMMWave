@@ -2,6 +2,7 @@
 // curso (en Adquisición) o indicador global (en Análisis).
 
 import { Radio, Square } from "lucide-react";
+import { CmaeDot } from "../cmae/CmaeView";
 import { useNow } from "../lib/hooks";
 import { liveT } from "../lib/useLive";
 import { fmt, mmss } from "../lib/format";
@@ -44,7 +45,7 @@ function Indicator({ live, onClick }) {
   );
 }
 
-export default function Header({ tab, setTab, live, liveActive, screen, onStop, sourceText, startedClock }) {
+export default function Header({ tab, setTab, live, cmae, cmaeEnabled, liveActive, screen, onStop, sourceText, startedClock }) {
   // Se mantiene durante el error en vivo; el botón Detener solo aparece si sigue corriendo.
   const showLiveInfo = tab === "adq" && screen === "live";
   const s = live.session;
@@ -57,6 +58,13 @@ export default function Header({ tab, setTab, live, liveActive, screen, onStop, 
       <nav style={{ display: "flex", alignItems: "stretch", gap: 4 }} aria-label="Secciones">
         <button onClick={() => setTab("adq")} style={tabStyle(tab === "adq")} aria-current={tab === "adq" ? "page" : undefined}>Adquisición</button>
         <button onClick={() => setTab("ana")} style={tabStyle(tab === "ana")} aria-current={tab === "ana" ? "page" : undefined}>Análisis</button>
+        {cmaeEnabled && (
+          <button onClick={() => setTab("cmae")} style={{ ...tabStyle(tab === "cmae"), display: "flex", alignItems: "center", gap: 8 }}
+            aria-current={tab === "cmae" ? "page" : undefined} title={`Placa CMAE: ${cmae?.conexion?.estado ?? "sin conexión con el backend"}`}>
+            <CmaeDot estado={cmae} />
+            Placa CMAE
+          </button>
+        )}
       </nav>
       {showLiveInfo && (
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 16, fontSize: 13, minWidth: 0 }}>
@@ -76,7 +84,7 @@ export default function Header({ tab, setTab, live, liveActive, screen, onStop, 
           )}
         </div>
       )}
-      {tab === "ana" && liveActive && <Indicator live={live} onClick={() => setTab("adq")} />}
+      {tab !== "adq" && liveActive && <Indicator live={live} onClick={() => setTab("adq")} />}
     </header>
   );
 }

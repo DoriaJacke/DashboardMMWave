@@ -15,12 +15,14 @@ DashboardMMWave/
 │   ├── acquisition.py         Fuentes de datos, sesión de adquisición y protocolos
 │   ├── config.py              Valores por defecto, validación y configuración guardada
 │   ├── data_io.py             Lectura de CSV, intervalos de fase y resúmenes
-│   └── plots.py               Filtro Savitzky-Golay y exportación de imágenes PNG
+│   ├── plots.py               Filtro Savitzky-Golay y exportación de imágenes PNG
+│   └── cmae/                  Placa CMAE: protocolo, conexión y datos en vivo (ver "Placa CMAE")
 ├── frontend/                  Interfaz (Vite + React + React-Bootstrap)
 │   └── src/
 │       ├── App.jsx            Pantallas y estado general
 │       ├── components/        Banner, métricas, distancia, gráficos, resultado…
 │       ├── lib/               Conexión en vivo, API, series y cálculos de los gráficos
+│       ├── cmae/              Gráficos en vivo de la placa CMAE (uPlot) y su conexión
 │       └── styles/            Sistema de diseño y tema Bootstrap
 ├── CodigosBaseMirko/          Scripts originales en que se basa el dashboard
 │   ├── MEDICION20SEQRES.py    Protocolo de 20 mediciones con retención respiratoria
@@ -120,7 +122,7 @@ La interfaz queda en http://localhost:5173 y redirige la API y el WebSocket al p
 
 ### Con Docker
 
-> **En Windows, el contenedor no ve los puertos COM.** Sirve para probar el dashboard con el **Simulador**, pero no para medir con el radar: para eso hay que ejecutarlo sin Docker, como se indica arriba. Lo mismo ocurrirá con Bluetooth si se suma la placa CMAE.
+> **En Windows, el contenedor no ve los puertos COM ni el Bluetooth.** Sirve para probar el dashboard con el **Simulador** del radar y la placa CMAE **Simulada**, pero no para medir con el hardware: para eso hay que ejecutarlo sin Docker, como se indica arriba.
 
 La imagen compila la interfaz por su cuenta, así que solo hace falta Docker. Desde la raíz del repositorio, en PowerShell:
 
@@ -234,6 +236,85 @@ Disponible en la vista en vivo y en el resultado. Al activarlo se superponen la 
 
 ---
 
+## Placa CMAE
+
+> **Deshabilitada por defecto.** Mientras se revisa la integración con el profesor guía, la placa está aislada del
+> dashboard del radar: el backend no carga `backend/cmae/` (ni Bluetooth), no expone `/api/cmae/*` ni `/ws/cmae`,
+> no graba `<archivo>_cmae.csv`, y la interfaz oculta la pestaña *Placa CMAE* y sus tarjetas. El código sigue en el
+> repositorio. Para encenderla, define `MMWAVE_CMAE=1` antes de iniciar el backend
+> (PowerShell: `$env:MMWAVE_CMAE = "1"`; cmd: `set MMWAVE_CMAE=1`) o descomenta la línea en `levantar_dashboard.bat`.
+> `GET /api/features` dice si está activa. Ver `backend/features.py`.
+
+El dashboard adquiere, junto con el radar, tres señales de la placa CMAE como referencia, sincronizadas con el protocolo de captura:
+
+| Gráfico | Sensor | Qué muestra |
+|---|---|---|
+| ECG filtrado | ADS1220 · AD8233 | Señal de ECG en µV, últimos 10 s |
+| Pulsómetro y oxímetro | MAX30102 | SpO₂ (%) y pulso (BPM) del oxímetro, más el pulso calculado desde el ECG |
+| Pulsómetro | MAX30102 | Onda de pulso infrarroja (cuentas, ~100 por segundo) |
+| Presión diferencial | SDP810 | Presión diferencial en Pa (~9 por segundo): sube y baja con cada respiración, para comparar con la frecuencia respiratoria del radar |
+| Presión barométrica | BME680 | Presión atmosférica en hPa. Se graba y se muestra como valor; no se grafica en la adquisición |
+
+### Conectar la placa
+
+En la pestaña **Placa CMAE**, botón **Conectar placa**:
+
+| Forma | Qué necesita |
+|---|---|
+| Bluetooth | Bluetooth en el PC y el número de la placa (el de su nombre `CMAE-N-S3-N16R8`). **Buscar placas cercanas** lista las que están encendidas |
+| USB | Cable en la entrada **USB Serial Carga** de la placa (controlador CP210x). Es otro puerto COM que el del ESP32 del radar |
+| Simulada | Nada. Inventa datos con el formato real de la placa, para probar sin hardware |
+
+La conexión de la placa es **independiente de la adquisición del radar**: se puede conectar antes, durante o después, y desconectarla no detiene la adquisición. Si se corta el Bluetooth, vuelve a intentar sola hasta presionar **Desconectar**. La última forma de conexión usada se recuerda en `datos/.cmae_config.json`.
+
+### En la adquisición
+
+- **Conectar.** En *Nueva adquisición*, la tarjeta **Placa CMAE** (bajo *Fuente de datos*) tiene el botón **Conectar placa**. Durante la toma, la tarjeta *Placa CMAE* de la columna izquierda también permite conectar o desconectar.
+- **Gráficos aparte, sincronizados.** Los de la placa van en una tarjeta propia, a la derecha de la del radar: ECG, pulsómetro (onda de pulso IR del MAX30102), BPM (oxímetro y calculado desde el ECG), SpO₂ y presión diferencial (respiración, SDP810). Usan el mismo eje X que el radar (segundos desde el inicio), la misma ventana, el sombreado de fases, las marcas y la línea del instante actual. El zoom está enlazado: acercar o desplazar una tarjeta mueve también la otra. Al acercar se ve cada latido del ECG y de la onda de pulso. Funciona igual en la vista en vivo y en el Resultado. La tarjeta de la placa siempre usa tiempo; si el radar está en modo Índice, el zoom de cada tarjeta es independiente.
+- **Valores actuales.** La tarjeta *Placa CMAE* de la columna izquierda muestra SpO₂, pulso del oxímetro, pulso del ECG y presión barométrica, con los avisos de la placa (*Sin dedo*, *Electrodos desconectados*). Se ven también durante la espera de posicionamiento, para revisar los sensores antes de medir.
+- **Grabación.** Las muestras se guardan en `datos/<archivo>_cmae.csv`, junto al CSV del radar. Como en el radar, solo se graban las fases que se graban (no la espera ni la pausa entre mediciones). El Resultado indica el archivo y cuántas muestras tiene. Si la placa se conecta a mitad de la adquisición, se graba desde ese momento.
+
+La placa puede conectarse antes de iniciar la adquisición (recomendado) o durante ella. Desconectarla no detiene la adquisición del radar.
+
+#### Cómo se sincronizan
+
+La placa marca cada muestra con su propio reloj (ms desde que se encendió). El backend estima a qué hora del PC corresponde ese reloj con la trama que llega con menos demora (`RelojPlaca` en `backend/cmae/sincronia.py`), y convierte cada muestra al mismo `t` de la adquisición del radar. Así cada muestra queda en el instante en que la midió la placa, no cuando llegó por Bluetooth. Su medición y su fase se toman de las marcas de fase del radar en ese instante. Desfase medido con la placa simulada: unos 50 ms.
+
+Ten en cuenta que HR y BR del radar llegan con su propio retraso de cálculo (ver *Retraso de los datos*): el ECG y el oxímetro reaccionan antes que el HR del radar.
+
+#### CSV de la placa (`<archivo>_cmae.csv`)
+
+Formato largo, una fila por muestra:
+
+```
+timestamp, t, medicion, fase, flag_hold, senal, valor
+```
+
+- `timestamp`: hora del PC de la muestra, con milisegundos. `t`: segundos desde el inicio de la adquisición, la misma escala del CSV del radar.
+- `medicion`, `fase`, `flag_hold`: los del protocolo en ese instante (`NORMAL`, `PREP`, `HOLD`, `RECOVERY`, `MONITOREO` o `CONTINUO`).
+- `senal`: `ECG_uV` (~600 por segundo), `PPG_IR` (onda de pulso, ~100 por segundo), `SPO2_pct`, `BPM_OXIMETRO`, `BPM_ECG`, `PRESION_DIF_Pa` (~9 por segundo) y `PRESION_hPa` (1 por segundo). SpO₂ y BPM solo cuando la placa los da por válidos.
+
+Estos archivos no aparecen solos en la lista de Análisis: acompañan al CSV del radar.
+
+### Pestaña Placa CMAE
+
+Los tres gráficos en grande con el reloj de la placa, sin necesidad de una adquisición, y el estado de la conexión (tramas por segundo, porcentaje de muestras perdidas, cortes). **Corta / Normal / Larga** cambian cuánto tiempo se ve. El punto junto a *Placa CMAE* en el encabezado indica la conexión: verde conectada, ámbar conectando o reconectando, rojo error, gris desconectada.
+
+Cada gráfico tiene un punto de estado (verde si llegan datos, ámbar si dejaron de llegar, rojo si la placa nunca envió datos de ese sensor) y muestra los avisos de la placa: *Electrodos desconectados*, *Sin dedo*, *Calculando…*. No se dibujan los valores de SpO₂ y BPM que la placa marca como no válidos.
+
+> **Pendiente:** la sección Análisis y la exportación de imágenes todavía no leen el CSV de la placa; solo el Resultado de la última adquisición muestra sus gráficos.
+
+### Protocolo
+
+La placa envía tramas binarias `AA 55 | versión | cantidad | reloj u32 | paquetes… | CRC16-CCITT`; cada paquete es `tipo u16 | secuencia u32 | tiempo_ms u32 | largo u16 | contenido`.
+
+- **Bluetooth (BLE):** servicio Nordic UART. Al conectar se escribe `START` en la característica RX (`6E400002-…`) y se reciben notificaciones en TX (`6E400003-…`); al desconectar se envía `STOP`. Cada trama llega partida en fragmentos `CB 1E` que se rearman y validan con CRC. Las señales rápidas (ECG, PPG) llegan en bloques de varias muestras (tipos `0x8xxx`).
+- **USB:** puerto COM a 921600 baudios; las tramas se buscan en el flujo de bytes y se validan con CRC.
+
+El código viene del dashboard CMAE y está en `backend/cmae/` (`protocolo.py`, `conexion.py`, `en_vivo.py`, `simulador.py`, `pulso_ecg.py`). Si se corrige allá, se vuelve a copiar; `en_vivo.py` tiene un único cambio propio (la lista de series que se envían), marcado al comienzo. `servicio.py` es lo que conecta todo con este dashboard y `sincronia.py` lleva la placa a la escala de tiempo de la adquisición. En la interfaz, `frontend/src/cmae/` trae `LiveChart.jsx`, `LiveValue.jsx`, `store.js` y `clock.js` del dashboard CMAE; las curvas no pasan por el estado de React.
+
+---
+
 ## Sección Análisis
 
 Sirve para revisar mediciones ya guardadas, incluidas las antiguas, sin hacer una adquisición nueva.
@@ -298,7 +379,15 @@ La secuencia conserva el formato de los scripts originales: `HRBRWF.py` filtra p
 | GET | `/api/acquisition/last` | Resultado de la última adquisición terminada |
 | GET | `/api/acquisition/summary` | Resumen por fase |
 | POST | `/api/export?dpi=300&sg_window=0.8&sg_order=2` | Genera y devuelve `graficos_mediciones.zip` |
-| WS | `/ws/live` | Al conectarse envía el historial completo; después, apenas llegan datos nuevos o cambia la fase (y al menos una vez por segundo), el estado y solo los datos nuevos |
+| GET | `/api/features` | Funciones opcionales activas: `{cmae: true \| false}` |
+| GET | `/api/cmae/estado` | Placa CMAE: conexión, sensores y avisos |
+| GET | `/api/cmae/puertos` | Puertos COM; marca el que parece ser la placa |
+| POST | `/api/cmae/ble/buscar` | Placas CMAE cercanas por Bluetooth (5 s) |
+| POST | `/api/cmae/conectar` | `{origen: "ble" \| "uart" \| "simulada", numero, puerto, formato}`. 409 si ya está conectada |
+| POST | `/api/cmae/desconectar` | Desconecta la placa |
+| GET / PUT | `/api/cmae/config` | Última forma de conexión usada |
+| WS | `/ws/cmae` | Catálogo de series y estado (JSON, 2 por segundo) y curvas nuevas (binario, ~30 por segundo) |
+| WS | `/ws/live` | Al conectarse envía el historial completo; después, apenas llegan datos nuevos o cambia la fase (y al menos una vez por segundo), el estado y solo los datos nuevos. Incluye `cmae` (`{señal: [[t…], [valor…]]}`) con las muestras de la placa en la escala de la adquisición, y `status.cmae` con su CSV |
 
 La variable de entorno `MMWAVE_DATA_DIR` cambia la carpeta de datos (por defecto `datos/`), lo que sirve para hacer pruebas sin tocar los datos reales.
 

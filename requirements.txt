@@ -6,3 +6,4 @@ pandas>=2.0
 numpy>=1.24
 matplotlib>=3.7
 scipy>=1.10
+bleak>=3.0  # Bluetooth de la placa CMAE (la misma versión probada en su dashboard: 3.0.2)

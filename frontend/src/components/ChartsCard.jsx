@@ -1,6 +1,11 @@
 // Tarjeta de gráficos (compartida por En vivo y Resultado): tres filas BW, HR y BR
 // con eje X compartido en modo Tiempo, sombreado de fases, marcas, filtro SG,
 // tooltip unificado y zoom (arrastrar, botones o doble clic para restablecer).
+//
+// Con variant="cmae" la misma tarjeta muestra, aparte, las señales de la placa
+// CMAE (data.cmae, ya en la escala de tiempo de la adquisición): ECG, pulsómetro,
+// BPM, SpO₂ y presión diferencial, con el mismo eje X, fases y marcas que el
+// radar. App.jsx les pasa un zoom compartido para que ambas tarjetas se muevan juntas.
 
 import { Fragment, memo, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, Settings2, ZoomIn, ZoomOut } from "lucide-react";
@@ -12,11 +17,31 @@ import { useSize } from "../lib/hooks";
 const ML = 58;
 const MR = 16;
 const PT = 6;
-const DEFS = [
-  { title: "Onda de respiración BW", unit: "sin unidad · 5 muestras por línea BW", short: "", key: "BW", def: [0, 255] },
-  { title: "Frecuencia cardíaca HR", unit: "BPM", short: "BPM", key: "HR", def: [40, 120] },
-  { title: "Frecuencia respiratoria BR", unit: "resp/min", short: "resp/min", key: "BR", def: [0, 30] },
+const RADAR_LINE = "var(--color-accent-700)";
+const RADAR_DEFS = [
+  { title: "Onda de respiración BW", unit: "sin unidad · 5 muestras por línea BW", short: "", key: "BW", def: [0, 255], si: 0 },
+  { title: "Frecuencia cardíaca HR", unit: "BPM", short: "BPM", key: "HR", def: [40, 120], si: 1 },
+  { title: "Frecuencia respiratoria BR", unit: "resp/min", short: "resp/min", key: "BR", def: [0, 30], si: 2 },
 ];
+// Placa CMAE. "k" son las señales de backend/cmae/sincronia.py; gap: hueco (s) que corta la línea.
+const CMAE_DEFS = [
+  { title: "ECG", unit: "µV · ADS1220", short: "µV", key: "ECG", def: [-200, 800], gap: 0.25,
+    lines: [{ k: "ecg", color: "var(--cm-ecg)" }] },
+  { title: "Pulsómetro · onda de pulso", unit: "cuentas IR · MAX30102", short: "", key: "PPG", def: [0, 1], gap: 0.5,
+    lines: [{ k: "ppg", color: "var(--cm-violet)" }] },
+  { title: "BPM", unit: "latidos/min", short: "BPM", key: "BPM", def: [50, 110], gap: 3,
+    lines: [{ k: "bpm", label: "Oxímetro", color: "var(--cm-bpm)" }, { k: "bpm_ecg", label: "ECG", color: "var(--cm-ecg)" }] },
+  { title: "SpO₂ · oxigenación en sangre", unit: "% · MAX30102", short: "%", key: "SpO₂", def: [90, 100], gap: 3,
+    lines: [{ k: "spo2", color: "var(--cm-spo2)" }] },
+  // Presión diferencial del SDP810: sube y baja con cada respiración (comparar con BW y BR del radar).
+  { title: "Presión diferencial · respiración", unit: "Pa · SDP810", short: "Pa", key: "ΔP", def: [-3, 3], gap: 2,
+    lines: [{ k: "dp", color: "var(--cm-orange)" }] },
+];
+
+/** ¿Hay muestras de la placa en esta adquisición? */
+export function hasCmaeData(cmae) {
+  return Object.values(cmae || {}).some((a) => a.length);
+}
 const PARTIAL_MSG = "Sin datos de onda BW. El firmware puede estar enviando solo HR y BR.";
 const WIN_LABEL = { med: "Medición actual", 60: "Últimos 60 s", 300: "Últimos 5 min", todo: "Todo" };
 const muted = { color: "var(--color-neutral-700)" };
@@ -24,25 +49,30 @@ const muted = { color: "var(--color-neutral-700)" };
 const decimals = (st) => (st < 0.1 ? 2 : st < 1 ? 1 : 0);
 
 /** Alto del área de trazado de cada gráfico según el alto disponible. */
-function layout(Hc, idx) {
-  const xlab = idx ? 3 * 22 : 22 + 6 + 6;
-  const avail = Hc - 20 - 6 - 3 * PT - xlab;
+function layout(Hc, idx, n) {
+  const xlab = idx ? n * 22 : 22 + 6 * (n - 1);
+  const avail = Hc - 20 - 6 - n * PT - xlab;
   let TH = 26;
-  let PHc = Math.floor((avail - 3 * TH) / 3);
+  let PHc = Math.floor((avail - n * TH) / n);
   const compact = PHc < 46;
   if (compact) {
     TH = 0;
-    PHc = Math.floor(avail / 3);
+    PHc = Math.floor(avail / n);
   }
-  return { TH, compact, PHc: Math.max(30, Math.min(220, PHc)) };
+  // Con las filas de la placa, si no caben con un alto legible, la tarjeta se desplaza.
+  return { TH, compact, PHc: Math.max(n > 3 ? 44 : 30, Math.min(220, PHc)) };
 }
 
 function buildCharts(o) {
-  const { series, idx, dom, segs, now, sg, sgo, sgN, shade, partial, emptyMsg, markers, W, PHc, TH, compact, zoom } = o;
+  const { defs, series, cmae, cmaeMsg, idx, dom, segs, now, sg, sgo, sgN, shade, partial, emptyMsg, markers, W, PHc, TH, compact, zoom } = o;
   const PW = Math.max(240, W - ML - MR);
   const z = zoom || [0, 1];
-  return DEFS.map((df, ci) => {
-    const pts = series[ci];
+  const last = defs.length - 1;
+  return defs.map((df, ci) => {
+    const lines = df.lines
+      ? df.lines.map((l) => ({ ...l, pts: cmae?.[l.k] || [] }))
+      : [{ color: RADAR_LINE, pts: series[df.si] }];
+    const pts = lines[0].pts;
     let d0;
     let d1;
     if (idx) {
@@ -52,24 +82,29 @@ function buildCharts(o) {
     const sp = d1 - d0 || 1;
     const a = d0 + z[0] * sp;
     const b = d0 + z[1] * sp;
-    let i0;
-    let i1;
-    if (idx) {
-      i0 = Math.max(0, Math.ceil(a));
-      i1 = Math.min(pts.length - 1, Math.floor(b));
-    } else {
-      i0 = lb(pts, a);
-      i1 = lb(pts, b + 1e-9) - 1;
+    for (const l of lines) {
+      if (idx) {
+        l.i0 = Math.max(0, Math.ceil(a));
+        l.i1 = Math.min(l.pts.length - 1, Math.floor(b));
+      } else {
+        l.i0 = lb(l.pts, a);
+        l.i1 = lb(l.pts, b + 1e-9) - 1;
+      }
+      l.n = Math.max(0, l.i1 - l.i0 + 1);
     }
-    const n = Math.max(0, i1 - i0 + 1);
+    const { i0, i1 } = lines[0];
+    const n = lines.reduce((sum, l) => sum + l.n, 0);
 
     let lo = Infinity;
     let hi = -Infinity;
-    const stp = Math.max(1, Math.floor(n / 3000));
-    for (let i = i0; i <= i1; i += stp) {
-      const v = pts[i].v;
-      if (v < lo) lo = v;
-      if (v > hi) hi = v;
+    for (const l of lines) {
+      // El ECG necesita revisar todas las muestras: saltarse algunas recortaría los picos.
+      const stp = Math.max(1, Math.floor(l.n / (df.lines ? 400000 : 3000)));
+      for (let i = l.i0; i <= l.i1; i += stp) {
+        const v = l.pts[i].v;
+        if (v < lo) lo = v;
+        if (v > hi) hi = v;
+      }
     }
     if (!n) [lo, hi] = df.def;
     else {
@@ -83,11 +118,14 @@ function buildCharts(o) {
     const sx = (x) => ML + ((x - a) / (b - a)) * PW;
     const sy = (v) => PT + PHc - ((v - lo) / (hi - lo)) * PHc;
     const X = (j) => (idx ? j : pts[j].t);
-    const path = pathOf(i0, i1, X, (j) => pts[j].v, sx, sy, idx ? Infinity : 2.5, PW);
+    for (const l of lines) {
+      const P = l.pts;
+      l.path = pathOf(l.i0, l.i1, (j) => (idx ? j : P[j].t), (j) => P[j].v, sx, sy, idx ? Infinity : df.gap ?? 2.5, PW);
+    }
 
     // Filtro Savitzky-Golay (solo BW): no cruza huecos entre tramos.
     let fpath = "";
-    if (ci === 0 && sg && n > 0) {
+    if (df.key === "BW" && sg && n > 0) {
       const h = (sgN - 1) / 2;
       const c = sgCoef(h, sgo);
       const dt = o.dt;
@@ -105,7 +143,7 @@ function buildCharts(o) {
     }
 
     const dots = [];
-    if (n > 0 && n <= PW / 7) for (let i = i0; i <= i1; i++) dots.push({ x: sx(X(i)), y: sy(pts[i].v) });
+    if (!df.lines && n > 0 && n <= PW / 7) for (let i = i0; i <= i1; i++) dots.push({ x: sx(X(i)), y: sy(pts[i].v) });
 
     const nx = nice(a, b, Math.max(3, Math.round(PW / 110)));
     const xTicks = nx.ticks
@@ -141,13 +179,13 @@ function buildCharts(o) {
       marks.push({ x: sx(xv), mk });
     }
 
-    const showX = idx || ci === 2;
+    const showX = idx || ci === last;
     const H = PT + PHc + (showX ? 22 : 6);
     const nowX = now != null && !idx && now >= a && now <= b ? sx(now) : null;
-    const empty = n ? "" : ci === 0 && partial ? PARTIAL_MSG : emptyMsg;
+    const empty = n ? "" : df.lines ? cmaeMsg : ci === 0 && partial ? PARTIAL_MSG : emptyMsg;
     return {
-      ci, df, pts, a, b, idx, PW, W, H, TH, PHc, compact, path, fpath, dots, xTicks, yTicks, rects, marks,
-      showX, nowX, empty, rawOp: sg && ci === 0 ? 0.35 : 1,
+      ci, df, pts, lines, a, b, idx, PW, W, H, TH, PHc, compact, fpath, dots, xTicks, yTicks, rects, marks,
+      showX, nowX, empty, rawOp: sg && df.key === "BW" ? 0.35 : 1,
     };
   });
 }
@@ -163,8 +201,11 @@ function tooltipLines(c, charts, frac, segs, markers, t0Wall) {
     const mk = markers.find((m) => Math.abs(m.t - xv) <= (c.b - c.a) * 0.01 + 0.3);
     if (mk) lines.push({ k: "Marca", v: mk.label });
     charts.forEach((cc) => {
-      const p = nearest(cc.pts, xv);
-      lines.push({ k: cc.df.key, v: p ? fmtVal(p.v) + (cc.df.short ? ` ${cc.df.short}` : "") : "—" });
+      for (const l of cc.lines) {
+        const p = nearest(l.pts, xv);
+        const v = p ? (cc.df.lines ? fmt(p.v, Math.abs(p.v) >= 100 ? 0 : 1) : fmtVal(p.v)) : null;
+        lines.push({ k: l.label ? `${cc.df.key} ${l.label}` : cc.df.key, v: v != null ? v + (cc.df.short ? ` ${cc.df.short}` : "") : "—" });
+      }
     });
   } else {
     const i = Math.round(c.a + frac * (c.b - c.a));
@@ -184,6 +225,15 @@ function markTitle(mk, proto, t0Wall) {
   return `${mk.label}${where} · t = ${fmt(mk.t, 1)} s · ${clockAt(t0Wall, mk.t)}`;
 }
 
+function LineLegend({ lines }) {
+  return lines.map((l) => (
+    <span key={l.k} style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+      <span style={{ width: 12, height: 0, borderTop: `2px solid ${l.color}` }} />
+      {l.label}
+    </span>
+  ));
+}
+
 function ChartRow({ c, sgLegend, hover, brush, tip, handlers, proto, t0Wall, onReset }) {
   const yb = PT + c.PHc;
   const xr = ML + c.PW;
@@ -200,6 +250,7 @@ function ChartRow({ c, sgLegend, hover, brush, tip, handlers, proto, t0Wall, onR
         <span style={{ fontFamily: "var(--font-heading)", fontWeight: 600, fontSize: 16 }}>{c.df.title}</span>
         <span style={{ fontSize: 12, ...muted }}>{c.df.unit}</span>
         <span style={{ marginLeft: "auto", alignSelf: "center", display: "flex", gap: 14, fontSize: 12, lineHeight: 1.2, whiteSpace: "nowrap", ...muted }}>
+          {c.lines.length > 1 && <LineLegend lines={c.lines} />}
           {c.ci === 0 &&
             sgLegend.map((lg) => (
               <span key={lg.label} style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -224,7 +275,9 @@ function ChartRow({ c, sgLegend, hover, brush, tip, handlers, proto, t0Wall, onR
         ))}
         <line x1={ML} x2={ML} y1={PT} y2={yb} stroke="rgba(29,31,32,.35)" />
         <line x1={ML} x2={xr} y1={yb} y2={yb} stroke="rgba(29,31,32,.35)" />
-        <path d={c.path} fill="none" stroke="var(--color-accent-700)" strokeWidth="1.25" opacity={c.rawOp} strokeLinejoin="round" />
+        {c.lines.map((l, i) => (
+          <path key={i} d={l.path} fill="none" stroke={l.color} strokeWidth={c.df.lines ? 1 : 1.25} opacity={c.rawOp} strokeLinejoin="round" />
+        ))}
         {c.dots.map((d, i) => (
           <circle key={i} cx={d.x} cy={d.y} r="2.6" fill="var(--color-bg)" stroke="var(--color-accent-700)" strokeWidth="1.25" opacity={c.rawOp} />
         ))}
@@ -269,6 +322,11 @@ function ChartRow({ c, sgLegend, hover, brush, tip, handlers, proto, t0Wall, onR
         {c.compact && (
           <div style={{ position: "absolute", left: 64, top: 7, fontFamily: "var(--font-heading)", fontWeight: 600, fontSize: 13, background: "rgba(255,255,255,.85)", padding: "0 4px", borderRadius: 3 }}>
             {c.df.title} <span style={{ fontFamily: "var(--font-body)", fontWeight: 400, fontSize: 11, ...muted }}>{c.df.short}</span>
+            {c.lines.length > 1 && (
+              <span style={{ fontFamily: "var(--font-body)", fontWeight: 400, fontSize: 11, marginLeft: 8, display: "inline-flex", gap: 10, ...muted }}>
+                <LineLegend lines={c.lines} />
+              </span>
+            )}
           </div>
         )}
         {c.empty && (
@@ -306,26 +364,28 @@ function ChartRow({ c, sgLegend, hover, brush, tip, handlers, proto, t0Wall, onR
 }
 
 /** Área de los tres gráficos: mide su espacio y reparte la altura. */
-function ChartsArea({ data, view, zoom, setZoom, proto, sgInfo }) {
+function ChartsArea({ data, view, zoom, setZoom, proto, sgInfo, variant }) {
   const [ref, size] = useSize();
   const [hover, setHover] = useState(null);
   const [brush, setBrush] = useState(null);
   const drag = useRef(null);
-  const idx = view.x === "i";
-  const lay = layout(size.h || 460, idx);
+  // La placa siempre va en tiempo: sus señales tienen ritmos distintos y no tienen índice común.
+  const idx = variant !== "cmae" && view.x === "i";
+  const defs = variant === "cmae" ? CMAE_DEFS : RADAR_DEFS;
+  const lay = layout((size.h || 460) - 6, idx, defs.length);
 
   const charts = useMemo(
     () =>
       size.w
         ? buildCharts({
-            series: data.series, idx, dom: data.dom, segs: data.segs, now: data.now, sg: view.sg, sgo: +view.sgo,
+            defs, series: data.series, cmae: data.cmae, cmaeMsg: data.cmaeMsg || "Sin datos de la placa en esta ventana.", idx, dom: data.dom, segs: data.segs, now: data.now, sg: view.sg, sgo: +view.sgo,
             sgN: sgInfo.sgN, dt: sgInfo.dt, shade: view.shade && isSeqLike(proto), partial: data.partial,
             emptyMsg: data.emptyMsg, markers: data.markers, W: size.w, ...lay, zoom,
           })
         : [],
     // data.version cambia cuando llegan datos nuevos
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [data, idx, view.sg, view.sgo, view.shade, sgInfo, size.w, lay.PHc, lay.TH, zoom, proto],
+    [data, defs, idx, view.sg, view.sgo, view.shade, sgInfo, size.w, lay.PHc, lay.TH, zoom, proto],
   );
 
   const handlers = {
@@ -371,13 +431,13 @@ function ChartsArea({ data, view, zoom, setZoom, proto, sgInfo }) {
     : [];
 
   return (
-    <div ref={ref} style={{ flex: 1, minHeight: 0, overflow: "auto", display: "flex", flexDirection: "column", gap: 2, userSelect: "none", minWidth: 0 }}>
+    <div ref={ref} style={{ flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden", display: "flex", flexDirection: "column", gap: 2, userSelect: "none", minWidth: 0 }}>
       {charts.map((c) => (
         <ChartRow key={c.ci} c={c} sgLegend={sgLegend} hover={hover} brush={brush} tip={tip && tip.ci === c.ci ? tip : null}
           handlers={handlers} proto={proto} t0Wall={data.t0Wall} onReset={() => setZoom(null)} />
       ))}
-      <div style={{ paddingLeft: 58, fontSize: 12, display: "flex", justifyContent: "space-between", paddingTop: 2, ...muted }}>
-        <span>{idx ? "Eje X · Índice de muestra de cada serie" : "Eje X compartido · Tiempo (s) desde el inicio"}</span>
+      <div style={{ paddingLeft: 58, fontSize: 12, display: "flex", justifyContent: "space-between", paddingTop: 2, gap: 12, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", flex: "none", ...muted }}>
+        <span>{idx ? "Eje X · Índice de muestra de cada serie" : variant === "cmae" ? "Tiempo (s) desde el inicio · mismo eje y fases que el radar" : "Eje X compartido · Tiempo (s) desde el inicio"}</span>
         <span>Arrastra para acercar · doble clic para restablecer</span>
       </div>
     </div>
@@ -481,11 +541,18 @@ const iconBtn = { width: 32, height: 32, padding: 0 };
 /**
  * props.data: { series:[bw,hr,br], dom, segs, now, markers, emptyMsg, partial, t0Wall, version }
  */
-function ChartsCard({ isLive, isResult, proto, title, data, view, setView, medOptions, tab, setTab, table, zoomKey }) {
-  const [zoom, setZoom] = useState(null);
+function ChartsCard({ isLive, isResult, proto, title, data, view, setView, medOptions, tab, setTab, table, zoomKey,
+  variant = "radar", zoom: zoomProp, setZoom: setZoomProp }) {
+  // El zoom puede venir de afuera (compartido entre la tarjeta del radar y la de la placa).
+  const [zoomLocal, setZoomLocal] = useState(null);
+  const shared = setZoomProp !== undefined;
+  const zoom = shared ? zoomProp : zoomLocal;
+  const setZoom = shared ? setZoomProp : setZoomLocal;
+  const cmaeCard = variant === "cmae";
   const [optsOpen, setOptsOpen] = useState(false);
 
   // El zoom se reinicia al cambiar el eje X, la ventana, la medición o la adquisición.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => setZoom(null), [view.x, view.win, view.med, zoomKey]);
 
   const dt = useMemo(() => medianDt(data.series[0]), [data]);
@@ -520,13 +587,13 @@ function ChartsCard({ isLive, isResult, proto, title, data, view, setView, medOp
     setZoom(a <= 0.0001 && b >= 0.9999 ? null : [a, b]);
   };
 
-  const showCharts = !isResult || tab === "charts";
+  const showCharts = cmaeCard || !isResult || tab === "charts";
 
   return (
     <div className="card border-0" style={{ boxShadow: "var(--shadow-sm)", background: "#fff", minHeight: 0, minWidth: 0, padding: "10px 14px 6px", gap: 6, overflow: "auto", position: "relative" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 12, flex: "none" }}>
-        {isResult && (
-          <div className="nav nav-pills result-pills" role="tablist">
+      <div style={{ display: "flex", alignItems: "center", gap: 12, rowGap: 6, flexWrap: "wrap", flex: "none" }}>
+        {isResult && !cmaeCard && (
+          <div className="nav nav-pills result-pills" role="tablist" style={{ flexWrap: "nowrap", flex: "none" }}>
             <button className={`nav-link ${tab === "charts" ? "active" : ""}`} role="tab" aria-selected={tab === "charts"}
               onClick={() => setTab("charts")} style={{ fontSize: 14, whiteSpace: "nowrap" }}>
               Gráficos
@@ -542,12 +609,12 @@ function ChartsCard({ isLive, isResult, proto, title, data, view, setView, medOp
         </h3>
         {showCharts && (
           <>
-            <button className="btn btn-outline-secondary btn-sm d-inline-flex align-items-center gap-2" aria-expanded={optsOpen}
+            {!cmaeCard && <button className="btn btn-outline-secondary btn-sm d-inline-flex align-items-center gap-2" aria-expanded={optsOpen}
               onClick={() => setOptsOpen((v) => !v)} title={summary}
               style={{ height: 32, whiteSpace: "nowrap", maxWidth: "34%", minWidth: 0, flex: "0 1 auto", overflow: "hidden" }}>
               <Settings2 size={15} strokeWidth={1.5} style={{ flex: "none" }} />
               <span style={{ overflow: "hidden", textOverflow: "ellipsis", fontFamily: "var(--font-body)", fontWeight: 400 }}>{summary}</span>
-            </button>
+            </button>}
             <div style={{ display: "flex", gap: 4 }} role="toolbar" aria-label="Zoom del eje X">
               <button className="btn btn-outline-secondary d-inline-flex align-items-center justify-content-center" style={iconBtn} title="Desplazar a la izquierda" aria-label="Desplazar a la izquierda" onClick={() => zoomBy(1, -0.25)}>
                 <ChevronLeft size={16} strokeWidth={1.5} />
@@ -568,17 +635,17 @@ function ChartsCard({ isLive, isResult, proto, title, data, view, setView, medOp
           </>
         )}
       </div>
-      {showCharts && optsOpen && (
+      {showCharts && optsOpen && !cmaeCard && (
         <OptionsPanel isLive={isLive} isResult={isResult} proto={proto} view={view} setView={setView} medOptions={medOptions}
           shadeDisabled={shadeDisabled} sgNote={sgNote} onClose={() => setOptsOpen(false)} />
       )}
-      {showCharts && view.sg && (
+      {showCharts && view.sg && !cmaeCard && (
         <div title={sgNote} style={{ flex: "none", fontSize: 11, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", ...muted }}>
           {sgNote} Solo visual.
         </div>
       )}
       {showCharts ? (
-        <ChartsArea data={data} view={view} zoom={zoom} setZoom={setZoom} proto={proto} sgInfo={sgInfo} />
+        <ChartsArea data={data} view={view} zoom={zoom} setZoom={setZoom} proto={proto} sgInfo={sgInfo} variant={variant} />
       ) : (
         table
       )}

@@ -12,6 +12,9 @@ import "@fontsource/barlow-condensed/600.css";
 import "./styles/ds.css";
 import "bootstrap/dist/css/bootstrap.min.css";
 import "./styles/app.css";
+// Gráficos en vivo de la placa CMAE (uPlot) y sus colores.
+import "uplot/dist/uPlot.min.css";
+import "./cmae/cmae.css";
 
 import App from "./App";
 
